@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cosipy.nonimaging"
+dynamic = ["version"]
+dependencies = [
+                "cosipy",
+               ]
+description = "cosipy extension to analyze COSI's non-imaging data: BGO, BTO and Ge's single-site events"
+authors = [
+           {name = 'COSI Team', email = 'imc@umd.edu'},
+          ]
+
+[tool.setuptools.dynamic]
+version = { attr = "cosipy.nonimaging.__version__" }
+
