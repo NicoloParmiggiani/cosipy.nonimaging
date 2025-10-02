@@ -1,0 +1,219 @@
+# Example of a configuration file for BurstCube
+# Note: Since some parameters are long lists, this is easier to
+# read if you deactivate line wrapping e.g. less -S bc_config.yaml
+# Stuff related to MEGAlib simulation
+simulations:
+  #Geomega file, relative to this file
+  geometry: "/home/cosi/cosi/massmodel-cosi-smex-detailed/COSISMEX.sim_BGOreading.geo.setup"
+  # Spectrum of thrown particle. As long as we have narrow energy bin,
+  # the result do not strongly depend on this
+  # See Spectrum class for options
+  # Note that the normalization is arbitrary.
+  spectrum:
+    name: "PowerLaw"
+    args:
+      norm: 1
+      index: 1
+  # Detector effects such as energy resolution and efficiency
+  # See SimDetectorEffect class for options
+  detector_effects:
+    order: ["efficiency", "energy_resolution"] # Names must match entries in 'effects'
+    effects:
+      efficiency:
+        name: "SimEfficiencyFromPoints"
+        args:
+          energy:     [0. , 11.62855864, 15.41611204, 20.43731452, 27.09397959, 35.91879595, 47.61795505, 63.12766293, 83.68905852, 110.94753378, 147.08440351, 194.99146145, 258.50239135]
+          unit: keV
+          efficiency: [0. , 0. , 0. , 0 , 0. ,0. , 0. , 0. , 0.60677697, 0.95142435, 0.96497073, 0.99320829, 1.]
+      energy_resolution:
+        name: "SimEnergyResolutionFromFit"
+        args:
+          # These coefficients are the ones reported in ICRC 2019 proceedings,
+          # multiply by 10 so they are in keV (not MeV) and fractional (not %)
+          # You can also specify one list per detector
+          coeffs: [0.007, 3.60, 20.98]
+          unit: keV
+      
+  # Energy bins in a standard detector response matrix. This also set the
+  # minimum and maximum simulated energy
+  energy_bins: [5.00e+01, 9.70e+01, 1.88e+02, 3.65e+02, 7.07e+02, 1.37e+03, 2.66e+03, 5.16e+03, 1.00e+04]
+  # HEALPix NSIDE of all-sky detector response
+  nside: 32
+  
+# Detector configuration
+detector:
+  type: 'LabeledDetector'
+  detector_names: ['BGO_Z0_0', 'BGO_Z0_1','BGO_Z0_2','BGO_Z0_3','BGO_Z0_4','BGO_Z1_4','BGO_Z1_3','BGO_Z1_2','BGO_Z1_1','BGO_Z1_0','BGO_X1_0','BGO_X1_1','BGO_X1_2','BGO_X0_0','BGO_X0_1','BGO_X0_2','BGO_Y1_0','BGO_Y1_1','BGO_Y1_2','BGO_Y0_0','BGO_Y0_1','BGO_Y0_2']
+  
+  # Edges of energy channels (keV)
+  energy_channels: [0,80.0,2.0e+03,20.0e+03]
+  
+io:
+  headers:
+      CBD:
+        PRIMARY:
+          TELESCOP: ['BURSTCUBE'          , 'Telescope mission name']
+          INSTRUME: ['CSA'                , 'Instrument name']
+          DATAMODE: ['CBD'                , 'Datamode']
+          OBS_ID:   ['YYMMDD'             , 'Observation ID']
+          DATE-OBS: ['yyyy-mm-ddThh:mm:ss', 'Start Date']
+          DATE-END: ['yyyy-mm-ddThh:mm:ss', 'Stop Date']
+          ORIGIN:   ['GSFC'               , 'Origin of the FITS file']
+          DATE:     ['yyyy-mm-ddThh:mm:ss', 'File creation date']
+          CREATOR:  ['BCTOOLS'            , 'Software that create 1st the file']
+          # TODO: more missing 
+        CBD:
+          TELESCOP: ['BURSTCUBE'          , 'Telescope mission name']
+          INSTRUME: ['CSA'                , 'Instrument name']
+          DATAMODE: ['CBD'                , 'Datamode']
+          OBS_ID:   ['YYMMDD'             , 'Observation ID']
+          # TODO: more missing 
+        STDI:
+          TELESCOP: ['BURSTCUBE'          , 'Telescope mission name']
+          INSTRUME: ['CBD'                , 'Instrument name']
+          DATAMODE: ['EVENTS'             , 'Datamode']
+          OBS_ID:   ['YYMMDD'             , 'Observation ID']
+          # TODO: more missing 
+      TTE:
+        PRIMARY:
+          TELESCOP: ['BURSTCUBE'          , 'Telescope mission name']
+          INSTRUME: ['CSA'                , 'Instrument name']
+          DATAMODE: ['EVENTS'             , 'Datamode']
+          OBS_ID:   ['YYMMDD'             , 'Observation ID']
+          DATE-OBS: ['yyyy-mm-ddThh:mm:ss', 'Start Date']
+          DATE-END: ['yyyy-mm-ddThh:mm:ss', 'Stop Date']
+          ORIGIN:   ['GSFC'               , 'Origin of the FITS file']
+          DATE:     ['yyyy-mm-ddThh:mm:ss', 'File creation date']
+          CREATOR:  ['BCTOOLS'            , 'Software that create 1st the file']
+        EVENTS:
+          EXTNAME:  [''                   , 'name of this binary table extension']
+          TELESCOP: ['BURSTCUBE'          , 'Telescope mission name']
+          INSTRUME: ['CSA'                , 'Instrument name']
+          OBS_ID:   ['YYMMDD'             , 'Observation ID']
+          EQUINOX:  [2000.                , 'Equinox for RA and Dec']
+          RADECSYS: ['FK5'                , 'Stellar reference frame']
+          MJDREFI : [59215                , 'MJD of GLAST reference epoch, integer part']
+          MJDREFF : [0.00080074074074074  , 'MJD of GLAST reference epoch, fractional part']
+          TIMEREF:  ['LOCAL'              , 'Reference Frame']
+          TASSIGN:  ['SATELLITE'          , 'Time assined']
+          TIMESYS:  ['TT'                 , 'Time system']
+          TIMEUNIT: ['s'                  , 'Time since MJDREF, used in TSTART and TSTOP']
+          TIMEDEL:  [0.0                  , 'Integration time']
+          CLOCKAPP: [False                , 'If clock corrections are applied (T/F)']
+          DATE-OBS: ['yyyy-mm-ddThh:mm:ss', 'Start Date']
+          DATE-END: ['yyyy-mm-ddThh:mm:ss', 'Stop Date']
+          TSTART:   [0.0                  , 'Start Time']                              
+          TSTOP:    [0.0                  , 'Stop Time']                              
+          TELAPSE:  [0.0                  , 'TSTOP-TSTART in sec']
+          ONTIME:   [0.0                  , 'Sum good time interval in']
+          EXPOSURE: [0.0                  , 'Exposure']                                       
+          DEADAPP:  [False                , 'deadtime applied']                            
+          EVTTYPE:  ['T3E'                , 'Event Type of T3E or RTTE']                      
+          TRIGGER:  [0                    , 'Trigger number']                                 
+          TRIGTIME: [0.0                  , 'Trigger Time sec since 01 Jan 2021 00:00:00']    
+          TRIGUTC:  ['2023-01-17T18:54:0' , 'TIME of Trigger time in UTC']                   
+          HDUCLASS: ['OGIP'               , 'format conforms to the OGIP standard']
+          HDUCLAS1: ['EVENT', 'hduclass1']  
+          HDUCLAS2: ['ALL'  , 'hduclass2']
+          ORIGIN:   ['GSFC'               , 'Origin of the FITS file']
+          CREATOR:  ['BCTOOLS'            , 'Software that create 1st the file']
+          PROCVER:  ['00.00.00.00'        , 'Processing version']
+          CALDBVER: [0                    , 'CALDB version']
+          SEQPNUM:  [1                    , 'Number of times the dataset has been processed']
+          DATE:     ['yyyy-mm-ddThh:mm:ss', 'File creation date']
+        STDGTI:
+          EXTNAME:  [''                   , 'name of this binary table extension']
+          TELESCOP: ['BURSTCUBE'          , 'Telescope mission name']
+          INSTRUME: ['CSA'                , 'Instrument name']
+          DATAMODE: ['EVENTS'             , 'Datamode']
+          OBS_ID:   ['YYMMDD'             , 'Observation ID']
+          MJDREFI : [59215                , 'MJD of GLAST reference epoch, integer part']
+          MJDREFF : [0.00080074074074074  , 'MJD of GLAST reference epoch, fractional part']
+          TIMEREF:  ['LOCAL'              , 'Reference Frame']
+          TASSIGN:  ['SATELLITE'          , 'Time assined']
+          TIMESYS:  ['TT'                 , 'Time system']
+          TIMEUNIT: ['s'                  , 'Time since MJDREF, used in TSTART and TSTOP']
+          CLOCKAPP: [False                , 'If clock corrections are applied (T/F)']
+          DATE-OBS: ['yyyy-mm-ddThh:mm:ss', 'Start Date']
+          DATE-END: ['yyyy-mm-ddThh:mm:ss', 'Stop Date']
+          TSTART:   [0.0                  , 'Start Time']                              
+          TSTOP:    [0.0                  , 'Stop Time']                              
+          HDUCLASS: ['OGIP'               , 'format conforms to the OGIP standard']
+          HDUCLAS1: ['GTI', 'hduclass1']  
+          CREATOR:  ['BCTOOLS'            , 'Software that create 1st the file']
+          PROCVER:  ['00.00.00.00'        , 'Processing version']
+          CALDBVER: [0                    , 'CALDB version']
+          SEQPNUM:  [1                    , 'Number of times the dataset has been processed']          
+          ORIGIN:   ['GSFC'               , 'Origin of the FITS file']
+          DATE:     ['yyyy-mm-ddThh:mm:ss', 'File creation date']
+                
+      skymap:
+        PRIMARY:
+          TELESCOP: ['BURSTCUBE'          , 'Telescope mission name']
+          INSTRUME: ['CSA'                , 'Instrument name']
+          DATAMODE: ['EVENTS'             , 'Datamode']
+          OBJECT:   ['FULLSKY'            , 'Object name']
+          RA_OBJ:   [0.0                  , 'R.A. Object']
+          DEC_OBJ:  [0.0                  , 'Dec. Object']
+          POSFLAG:  [0                    , 'Position FLAG 1=good 0=best effort - 1=false']
+          EQUINOX:  [2000.                , 'Equinox for RA and Dec']
+          RADECSYS: ['FK5'                , 'Stellar reference frame']
+          OBS_ID:   ['YYMMDD'             , 'Observation ID']
+          TIMESYS:  ['TT'                 , 'Time system']
+          MJDREFI : [59215                , 'MJD of GLAST reference epoch, integer part']
+          MJDREFF : [0.00080074074074074  , 'MJD of GLAST reference epoch, fractional part']
+          TIMEUNIT: ['s'                  , 'Time since MJDREF, used in TSTART and TSTOP']
+          TIMEREF:  ['LOCAL'              , 'Reference Frame']
+          TASSIGN:  ['SATELLITE'          , 'Time assined']
+          CLOCKAPP: [False                , 'If clock corrections are applied (T/F)']
+          TRIGGER:  [0                    , 'Trigger number']                                 
+          TRIGTIME: [0.0                  , 'Trigger Time sec since 01 Jan 2021 00:00:00']    
+          TRIGUTC:  ['2023-01-17T18:54:0' , 'TIME of Trigger time in UTC']                   
+          TSTART:   [0.0                  , 'Start Time']                              
+          TSTOP:    [0.0                  , 'Stop Time']                              
+          DATE-OBS: ['yyyy-mm-ddThh:mm:ss', 'Start Date']
+          DATE-END: ['yyyy-mm-ddThh:mm:ss', 'Stop Date']
+          EXPOSURE: [0.0                  , 'Exposure']                                       
+          E_MIN:    [0.0                  , 'lower energy boundary']
+          E_MAX:    [0.0                  , 'high energy boundary']
+          E_UNIT:   ['keV'                , 'unit for the energy']
+          HDUCLASS: ['OGIP'               , 'format conforms to the OGIP standard']
+          HDUCLAS1: [IMAGE', 'HDUCLAS1']
+          HDUCLAS2: [TOTAL', 'HDUCLAS2']
+          CREATOR:  ['BCTOOLS'            , 'Software that create 1st the file']
+          PROCVER:  ['00.00.00.00'        , 'Processing version']
+          CALDBVER: [0                    , 'CALDB version']
+          SEQPNUM:  [1                    , 'Number of times the dataset has been processed']          
+          SOFTVER:  [''                   , 'Software version']
+          ORIGIN:   ['GSFC'               , 'Origin of the FITS file']
+          DATE:     ['yyyy-mm-ddThh:mm:ss', 'File creation date']
+        HEALPIX:
+          PIXTYPE:  ['HEALPIX'            , 'HEALPIX pixelization']
+          ORDERING: [''                   , 'Pixel order scheme']
+          COORDSYS: [''                   , 'Coordinate system']
+          NSIDE:    [0                    , 'Healpix resolution parameter']
+          FIRSTPIX: [0                    , 'First pixel']
+          LASTPIX:  [0                    , 'Last pixel']
+          INDXSCHM: [''                   , 'Indexing : IMPLICIT or EXPLICIT']
+          OBJECT:   ['FULLSKY'            , 'Object name']
+          BAD_DATA: [-1.6375e+30 , 'Value given to bad pixels']
+          EXTNAME:  [''                   , 'name of this binary table extension']
+          TELESCOP: ['BURSTCUBE'          , 'Telescope mission name']
+          INSTRUME: ['CSA'                , 'Instrument name']
+          OBS_ID:   ['YYMMDD'             , 'Observation ID']
+          TRIGGER:  [0                    , 'Trigger number']                                 
+          TRIGTIME: [0.0                  , 'Trigger Time sec since 01 Jan 2021 00:00:00']    
+          TRIGUTC:  ['2023-01-17T18:54:0' , 'TIME of Trigger time in UTC']                   
+          DATE-OBS: ['yyyy-mm-ddThh:mm:ss', 'Start Date']
+          DATE-END: ['yyyy-mm-ddThh:mm:ss', 'Stop Date']
+          EXPOSURE: [0.0                  , 'Exposure']                                       
+          E_MIN:    [0.0                  , 'lower energy boundary']
+          E_MAX:    [0.0                  , 'high energy boundary']
+          E_UNIT:   ['keV'                , 'unit for the energy']
+          CREATOR:  ['BCTOOLS'            , 'Software that create 1st the file']
+          SEQPNUM:  [1                    , 'Number of times the dataset has been processed']          
+          SOFTVER:  [''                   , 'Software version']
+          ORIGIN:   ['GSFC'               , 'Origin of the FITS file']
+          DATE:     ['yyyy-mm-ddThh:mm:ss', 'File creation date']
+
+
