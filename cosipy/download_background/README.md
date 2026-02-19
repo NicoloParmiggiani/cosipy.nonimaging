@@ -19,35 +19,20 @@ Where files are stored
 1) Download from Wasabi
 -----------------------
 
-Run the downloader; any missing files will be fetched into the chosen directory. You can pass it as a positional argument, with `--data-dir`, or via `BACKGROUND_DIR` (default: `/data/background`):
+Gli script ora richiedono path espliciti. Per il download devi passare obbligatoriamente la cartella di destinazione (BASE_DIR) come argomento posizionale. Il downloader creerà la cartella se non esiste ed eviterà di riscaricare file già presenti.
 
+Esempi minimi:
+
+- DC4:
 ```bash
-#enter inside docker container
-docker exec --user cosi -it cosi_grb_bgo_container bash
-
-#activate cosipy env inside docker
-source $HOME/deeplearning/bin/activate
-
-#define the path for the code
-export CONTAINER_COSI_CODE="/home/cosi/cosi/cosidl"
-
-# default destination
-cd $CONTAINER_COSI_CODE/download_background
-python3 download_background_from_wasabi.py
-
-# positional directory
-python3 download_background_from_wasabi.py /data/background
-
-# flag form
-python3 download_background_from_wasabi.py --data-dir /data/background
-
-# environment variable
-BACKGROUND_DIR=/data/background python3 download_background_from_wasabi.py
+python3 cosipy/download_background/download_background_from_wasabi_DC4.py /percorso/ai/dati/dc4
 ```
+  - Nota: per DC4 viene scaricato anche il file `DC4_format_6_month_EarthGalactic_correct_timing.ori.zip` nella stessa cartella.
 
-Notes:
-- If you prefer a different destination, use the CLI argument or `BACKGROUND_DIR` above; editing the script is no longer necessary.
-- The script is idempotent: it skips files that already exist.
+- DC3 (legacy):
+```bash
+python3 cosipy/download_background/download_background_from_wasabi_DC3.py /percorso/ai/dati/dc3
+```
 
 2) Extract light-curve counts
 -----------------------------

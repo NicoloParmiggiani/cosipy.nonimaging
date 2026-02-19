@@ -2,8 +2,9 @@ import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 import astropy.units as u
-from astropy.coordinates import SkyCoord
+from astropy.coordinates import SkyCoord, Galactic, ICRS
 from bctools.loc import TSMap, NormLocLike
+from scoords import Attitude, SpacecraftFrame
 
 
 class BGOLocalizerBCT:
@@ -12,11 +13,11 @@ class BGOLocalizerBCT:
 
     Parameters
     ----------
-    soft_lut_path : str
+    soft_loctable_path : str
         Path to the pickled LUT for the 'soft' spectrum.
-    medium_lut_path : str
+    medium_loctable_path : str
         Path to the pickled LUT for the 'medium' spectrum.
-    hard_lut_path : str
+    hard_loctable_path : str
         Path to the pickled LUT for the 'hard' spectrum.
     nside : int
         HEALPix Nside used to compute TS maps.
@@ -29,17 +30,26 @@ class BGOLocalizerBCT:
         ['BGO_X0', 'BGO_X1', 'BGO_Y0', 'BGO_Y1', 'BGO_Z0', 'BGO_Z1']
     """
 
-    def __init__(self, soft_lut_path, medium_lut_path, hard_lut_path, nside=64):
+    def __init__(self, soft_loctable_path, medium_loctable_path, hard_loctable_path, nside=64):
         # Store HEALPix Nside
         self.nside = nside
-        # Load all three LUTs at initialization
+        
+        # Load all three IRFs at initialization
+        # The IRFs have been generated using the bc-tools package:
+        #soft_spectrum = BandFunction._from_megalib(['BandFunction',10,10000,-1.9,-3.7,230],"10.0")
+        #medium_spectrum = BandFunction._from_megalib(['BandFunction',10,10000,-1,-2.3,699.9],"10.0")
+        #hard_spectrum = Comptonized._from_megalib(['Comptonized',10,10000,-0.5,1500],"10.0")
+        #soft_local_loctable = LocalLocTable.from_irf(irf, soft_spectrum,energy_channels = 1) # [80,2000]
+        #medium_local_loctable = LocalLocTable.from_irf(irf, medium_spectrum,energy_channels = 1)
+        #hard_local_loctable = LocalLocTable.from_irf(irf, hard_spectrum,energy_channels = 1)
+        
         self.luts = {
-            "soft": self._load_pickle(soft_lut_path),
-            "medium": self._load_pickle(medium_lut_path),
-            "hard": self._load_pickle(hard_lut_path),
+            "soft": self._load_pickle(soft_loctable_path),
+            "medium": self._load_pickle(medium_loctable_path),
+            "hard": self._load_pickle(hard_loctable_path),
         }
 
-    def localize(self, s_counts, b_counts):
+    def localize(self, s_counts, b_counts, attitude=None):
         """
         Run localization using all LUTs and return the one with the highest TS.
 
@@ -47,45 +57,101 @@ class BGOLocalizerBCT:
         ----------
         s_counts : list or np.ndarray
             Source counts in the following order:
-            ['BGO_X0', 'BGO_X1', 'BGO_Y0', 'BGO_Y1', 'BGO_Z0', 'BGO_Z1']
+            ['BGO_X0', 'BGO_X1', 'BGO_Y0', 'BGO_Y1', 'BGO_Z0', 'BGO_Z1'].
         b_counts : list or np.ndarray
             Background counts in the same order.
+        attitude : scoords.Attitude or None, optional
+            Spacecraft attitude used to convert the best-fit sky position
+            through the SpacecraftFrame. If provided, the best localization
+            (initially obtained in ICRS) is converted to spherical coordinates
+            (theta, phi), interpreted as (zenith, azimuth) in the spacecraft
+            frame, transformed to Galactic, and finally converted back to ICRS.
+            If None (default), the best-fit ICRS position from the TS map
+            is returned directly.
 
         Returns
         -------
         dict
-            Dictionary containing the best localization result.
+            Dictionary containing the best localization result. The output
+            coordinates ('ra_deg', 'dec_deg') are always given in ICRS.
+            The dictionary includes:
+
+            - 'label' : str
+                Spectrum label ('soft', 'medium', or 'hard').
+            - 'ts_map' : TSMap
+                Computed TS map object.
+            - 'ts_value' : float
+                Maximum TS value.
+            - 'sqrt_ts' : float
+                Square root of the maximum TS.
+            - 'ra_deg' : float
+                Best-fit right ascension in degrees (ICRS).
+            - 'dec_deg' : float
+                Best-fit declination in degrees (ICRS).
+            - 'cont_area_deg2' : float
+                90% containment area in square degrees.
+            - 'eq_radius_deg' : float
+                Equivalent 90% containment radius in degrees.
         """
+            
         results = []
 
         for label, lut in self.luts.items():
-            # Update LUT with data and background
+
             lut.set_background(b_counts)
             lut.set_data(s_counts)
 
-            # Compute the TS map for this LUT
             ts_map = TSMap(nside=self.nside, coordsys="icrs")
             likelihood = NormLocLike(lut)
             ts_map.compute(likelihood)
 
-            # Extract localization statistics
             ts_value = float(np.max(ts_map))
             best = ts_map.best_loc()
+
             cont_area = ts_map.error_area(cont=0.9).to(u.deg**2)
             eq_radius = np.sqrt(cont_area / np.pi).to(u.deg)
+
+            # Default: best location already in ICRS
+            final_coord = best
+
+            # If attitude provided, go through spacecraft frame
+            if attitude is not None:
+
+                # Convert best ICRS → theta, phi
+                ra = best.ra.to(u.rad).value
+                dec = best.dec.to(u.rad).value
+
+                theta = np.pi/2.0 - dec
+                phi = ra
+
+                azimuth = phi * u.rad
+                zenith = theta * u.rad
+
+                # Build coordinate in spacecraft frame
+                position_sc = SkyCoord(
+                    azimuth,
+                    90.0*u.deg - zenith.to(u.deg),
+                    representation_type='spherical',
+                    frame=SpacecraftFrame(attitude=attitude)
+                )
+
+                # Spacecraft to  Galactic
+                position_gal = position_sc.transform_to(Galactic())
+
+                # Galactic to ICRS 
+                final_coord = position_gal.transform_to(ICRS())
 
             results.append({
                 "label": label,
                 "ts_map": ts_map,
                 "ts_value": ts_value,
                 "sqrt_ts": float(np.sqrt(ts_value)),
-                "ra_deg": best.ra.deg,
-                "dec_deg": best.dec.deg,
+                "ra_deg": float(final_coord.ra.deg),
+                "dec_deg": float(final_coord.dec.deg),
                 "cont_area_deg2": float(cont_area.value),
                 "eq_radius_deg": float(eq_radius.value),
             })
 
-        # Return the result with the highest TS value
         return max(results, key=lambda r: r["ts_value"])
 
     def plot(self, result, true_coord=None, show=True, save_path=None):
