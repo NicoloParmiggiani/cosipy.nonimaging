@@ -116,6 +116,8 @@ class BGOLocalizerBCT:
 
             # If attitude provided, go through spacecraft frame
             if attitude is not None:
+                
+                print("attitude")
 
                 # Convert best ICRS → theta, phi
                 ra = best.ra.to(u.rad).value
@@ -146,6 +148,8 @@ class BGOLocalizerBCT:
                 "ts_map": ts_map,
                 "ts_value": ts_value,
                 "sqrt_ts": float(np.sqrt(ts_value)),
+                "l_deg":float(position_gal.l.deg),
+                "b_deg":float(position_gal.b.deg),
                 "ra_deg": float(final_coord.ra.deg),
                 "dec_deg": float(final_coord.dec.deg),
                 "cont_area_deg2": float(cont_area.value),
