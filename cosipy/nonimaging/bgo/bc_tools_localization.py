@@ -5,7 +5,9 @@ import astropy.units as u
 from astropy.coordinates import SkyCoord, Galactic, ICRS
 from bctools.loc import TSMap, NormLocLike
 from scoords import Attitude, SpacecraftFrame
-
+import healpy as hp
+from mhealpy.containers.healpix_map import HealpixMap
+from matplotlib.lines import Line2D
 
 class BGOLocalizerBCT:
     """
@@ -27,7 +29,8 @@ class BGOLocalizerBCT:
     The input counts (s_counts and b_counts) must follow the correct order
     of BGO detector panels to match the LUT definition:
 
-        ['BGO_X0', 'BGO_X1', 'BGO_Y0', 'BGO_Y1', 'BGO_Z0', 'BGO_Z1']
+        
+        ['BGO_Z1', 'BGO_Z0', 'BGO_X1', 'BGO_X0', 'BGO_Y1', 'BGO_Y0']
     """
 
     def __init__(self, soft_loctable_path, medium_loctable_path, hard_loctable_path, nside=64):
@@ -42,59 +45,111 @@ class BGOLocalizerBCT:
         #soft_local_loctable = LocalLocTable.from_irf(irf, soft_spectrum,energy_channels = 1) # [80,2000]
         #medium_local_loctable = LocalLocTable.from_irf(irf, medium_spectrum,energy_channels = 1)
         #hard_local_loctable = LocalLocTable.from_irf(irf, hard_spectrum,energy_channels = 1)
-        
-        self.luts = {
+             
+        print(self._load_pickle(soft_loctable_path))
+             
+        self.loctables = {
             "soft": self._load_pickle(soft_loctable_path),
             "medium": self._load_pickle(medium_loctable_path),
             "hard": self._load_pickle(hard_loctable_path),
         }
+        
+    def rotate_tsmap(self,ts_map, attitude):
+        """
+        Rotate a HEALPix TS map using spacecraft attitude.
 
-    def localize(self, s_counts, b_counts, attitude=None):
+        Parameters
+        ----------
+        ts_map : TSMap
+            TSMap object (must have .data attribute)
+        attitude : Attitude
+            Spacecraft attitude (created with Attitude.from_axes)
+
+        Returns
+        -------
+        np.ndarray
+            Rotated HEALPix map
+        """
+
+        data = ts_map.data
+        npix = len(data)
+        nside = hp.npix2nside(npix)
+
+        # all pixel directions
+        ipix = np.arange(npix)
+        theta, phi = hp.pix2ang(nside, ipix)
+
+        # build "fake ICRS" coordinates
+        ra = phi * u.rad
+        dec = (np.pi/2 - theta) * u.rad
+
+        coords = SkyCoord(ra=ra, dec=dec, frame=ICRS())
+
+        # go through spacecraft frame (this applies the attitude rotation)
+        coords_sc = coords.transform_to(SpacecraftFrame(attitude=attitude))
+
+        # back to real sky
+        coords_real = coords_sc.transform_to(ICRS())
+
+        # convert back to healpix angles
+        theta_new = np.pi/2 - coords_real.dec.to(u.rad).value
+        phi_new = coords_real.ra.to(u.rad).value
+
+        # interpolate rotated map
+        data_rot = hp.get_interp_val(data, theta_new, phi_new)
+
+        return data_rot
+
+    def localize(self, s_counts, b_counts, attitude=None, conf_level=0.9):
         """
         Run localization using all LUTs and return the one with the highest TS.
 
         Parameters
         ----------
         s_counts : list or np.ndarray
-            Source counts in the following order:
-            ['BGO_X0', 'BGO_X1', 'BGO_Y0', 'BGO_Y1', 'BGO_Z0', 'BGO_Z1'].
+            Source counts.
         b_counts : list or np.ndarray
-            Background counts in the same order.
-        attitude : scoords.Attitude or None, optional
-            Spacecraft attitude used to convert the best-fit sky position
-            through the SpacecraftFrame. If provided, the best localization
-            (initially obtained in ICRS) is converted to spherical coordinates
-            (theta, phi), interpreted as (zenith, azimuth) in the spacecraft
-            frame, transformed to Galactic, and finally converted back to ICRS.
-            If None (default), the best-fit ICRS position from the TS map
-            is returned directly.
+            Background counts.
+        attitude : Attitude or None
+            Spacecraft attitude. If provided, output is in Galactic (l, b).
+            If None, output is in instrument coordinates (theta, phi).
+        conf_level : float, optional
+            Confidence level for error region (default = 0.9).
 
         Returns
         -------
         dict
-            Dictionary containing the best localization result. The output
-            coordinates ('ra_deg', 'dec_deg') are always given in ICRS.
-            The dictionary includes:
-
-            - 'label' : str
-                Spectrum label ('soft', 'medium', or 'hard').
-            - 'ts_map' : TSMap
-                Computed TS map object.
-            - 'ts_value' : float
-                Maximum TS value.
-            - 'sqrt_ts' : float
-                Square root of the maximum TS.
-            - 'ra_deg' : float
-                Best-fit right ascension in degrees (ICRS).
-            - 'dec_deg' : float
-                Best-fit declination in degrees (ICRS).
-            - 'cont_area_deg2' : float
-                90% containment area in square degrees.
-            - 'eq_radius_deg' : float
-                Equivalent 90% containment radius in degrees.
+            Best localization result.
         """
-            
+        #['BGO_Z1', 'BGO_Z0', 'BGO_X1', 'BGO_X0', 'BGO_Y1', 'BGO_Y0']
+        #remap the counts following BGO IRF ['BGO_X0', 'BGO_X1', 'BGO_Y0', 'BGO_Y1', 'BGO_Z0', 'BGO_Z1']
+        
+        s_counts = s_counts[[3, 2, 5, 4, 1, 0]]
+        b_counts = b_counts[[3, 2, 5, 4, 1, 0]]
+        
+        print(s_counts)
+        print(b_counts)
+
         results = []
+        
+        # The local_loctable contains the expected rates in spacecraft coordinates
+        # We now need to use this to estimate the total expected counts in sky coordinate for
+        # the full duration of an event. 
+        # In this case we simply have a 1 second event and specifying the attitude by a quaternion
+        # ([0,0,0,1] corresponds to the identity rotation). You can have multiple attitude-duration
+        # pairs to correctly model long duration events.
+
+        print(self.loctables['soft'])
+   
+        soft_sky_loctable = self.loctables['soft'].to_skyloctable(attitude = attitude, duration = 1)
+        medium_sky_loctable = self.loctables['medium'].to_skyloctable(attitude = attitude, duration = 1)
+        hard_sky_loctable = self.loctables['hard'].to_skyloctable(attitude = attitude, duration = 1)
+        
+        self.luts = {
+            "soft": soft_sky_loctable,
+            "medium": medium_sky_loctable,
+            "hard": hard_sky_loctable,
+        }
 
         for label, lut in self.luts.items():
 
@@ -108,50 +163,64 @@ class BGOLocalizerBCT:
             ts_value = float(np.max(ts_map))
             best = ts_map.best_loc()
 
-            cont_area = ts_map.error_area(cont=0.9).to(u.deg**2)
+            cont_area = ts_map.error_area(cont=conf_level).to(u.deg**2)
             eq_radius = np.sqrt(cont_area / np.pi).to(u.deg)
 
-            # Default: best location already in ICRS
-            final_coord = best
+            # Default outputs
+            theta_out = -1.0
+            phi_out = -1.0
+            l_out = -1.0
+            b_out = -1.0
 
-            # If attitude provided, go through spacecraft frame
-            if attitude is not None:
-                
-                print("attitude")
-
-                # Convert best ICRS → theta, phi
+            if attitude is None:
+                # return theta/phi (local)
                 ra = best.ra.to(u.rad).value
                 dec = best.dec.to(u.rad).value
 
-                theta = np.pi/2.0 - dec
+                theta_out = np.pi / 2.0 - dec   # zenith
+                phi_out = ra                   # azimuth
+
+                out_map = ts_map.data
+
+            else:
+                # convert to galactic
+                ra = best.ra.to(u.rad).value
+                dec = best.dec.to(u.rad).value
+
+                theta = np.pi / 2.0 - dec
                 phi = ra
 
                 azimuth = phi * u.rad
                 zenith = theta * u.rad
 
-                # Build coordinate in spacecraft frame
                 position_sc = SkyCoord(
-                    azimuth,
-                    90.0*u.deg - zenith.to(u.deg),
-                    representation_type='spherical',
+                    lon=azimuth,
+                    lat=90.0 * u.deg - zenith.to(u.deg),
                     frame=SpacecraftFrame(attitude=attitude)
                 )
 
-                # Spacecraft to  Galactic
                 position_gal = position_sc.transform_to(Galactic())
 
-                # Galactic to ICRS 
-                final_coord = position_gal.transform_to(ICRS())
+                l_out = float(position_gal.l.deg)
+                b_out = float(position_gal.b.deg)
+                
+                ts_map_rot = self.rotate_tsmap(ts_map, attitude)
+                
+                out_map = HealpixMap(
+                    ts_map_rot,
+                    nside=ts_map.nside,
+                    coordsys=ts_map.coordsys
+                )
 
             results.append({
                 "label": label,
-                "ts_map": ts_map,
+                "ts_map": out_map,
                 "ts_value": ts_value,
                 "sqrt_ts": float(np.sqrt(ts_value)),
-                "l_deg":float(position_gal.l.deg),
-                "b_deg":float(position_gal.b.deg),
-                "ra_deg": float(final_coord.ra.deg),
-                "dec_deg": float(final_coord.dec.deg),
+                "theta": float(theta_out),
+                "phi": float(phi_out),
+                "l": float(l_out),
+                "b": float(b_out),
                 "cont_area_deg2": float(cont_area.value),
                 "eq_radius_deg": float(eq_radius.value),
             })
@@ -181,29 +250,27 @@ class BGOLocalizerBCT:
         tuple or None
             (img, moll) when show=False, otherwise None.
         """
-        import healpy as hp
-        import matplotlib.pyplot as plt
-        import astropy.units as u
-        from matplotlib.lines import Line2D
+ 
 
         ts_map = result["ts_map"]
         img, ax = ts_map.plot()
         ax.grid(alpha=0.5)
-
+        
         if true_coord is not None:
             # Actual location of simulated source
             ax.scatter(
-                true_coord.ra.to(u.deg).value,
-                true_coord.dec.to(u.deg).value,
+                true_coord.icrs.ra.to(u.deg).value,
+                true_coord.icrs.dec.to(u.deg).value,
                 color="red",
                 transform=ax.get_transform("world"),
                 s=2,
                 label="True source"
             )
-            
+        best_loc = SkyCoord(l=result['l']*u.deg, b=result['b']*u.deg, frame="galactic")
         ax.scatter(
-                ts_map.best_loc().ra.to(u.deg).value,
-                ts_map.best_loc().dec.to(u.deg).value,
+                
+                best_loc.icrs.ra.to(u.deg).value,
+                best_loc.icrs.dec.to(u.deg).value,
                 color="blue",
                 transform=ax.get_transform("world"),
                 s=2,
@@ -217,9 +284,9 @@ class BGOLocalizerBCT:
         title = (
             f"{result['label']}  "
             f"sqrt(TS)={result['sqrt_ts']:.2f}  "
-            f"RA={result['ra_deg']:.2f}  "
-            f"Dec={result['dec_deg']:.2f}  "
-            f"r90={result['eq_radius_deg']:.2f} deg"
+            f"l={result['l']:.2f}  "
+            f"b={result['b']:.2f}  "
+            f"area={result['cont_area_deg2']:.2f} deg^2"
         )
         ax.set_title(title)
 
