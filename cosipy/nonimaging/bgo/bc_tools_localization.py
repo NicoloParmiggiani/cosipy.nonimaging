@@ -45,8 +45,7 @@ class BGOLocalizerBCT:
         #soft_local_loctable = LocalLocTable.from_irf(irf, soft_spectrum,energy_channels = 1) # [80,2000]
         #medium_local_loctable = LocalLocTable.from_irf(irf, medium_spectrum,energy_channels = 1)
         #hard_local_loctable = LocalLocTable.from_irf(irf, hard_spectrum,energy_channels = 1)
-             
-        print(self._load_pickle(soft_loctable_path))
+        
              
         self.loctables = {
             "soft": self._load_pickle(soft_loctable_path),
@@ -54,53 +53,143 @@ class BGOLocalizerBCT:
             "hard": self._load_pickle(hard_loctable_path),
         }
         
-    def rotate_tsmap(self,ts_map, attitude):
+
+    def localize(self, s_counts, b_counts, attitude=None, conf_level=0.9, duration=1):
         """
-        Rotate a HEALPix TS map using spacecraft attitude.
+        Run localization using all LUTs and return the one with the highest TS.
 
         Parameters
         ----------
-        ts_map : TSMap
-            TSMap object (must have .data attribute)
-        attitude : Attitude
-            Spacecraft attitude (created with Attitude.from_axes)
+        s_counts : list or np.ndarray
+            Source counts.
+        b_counts : list or np.ndarray
+            Background counts.
+        attitude : Attitude or None
+            Spacecraft attitude. If provided, output is in Galactic (l, b).
+            If None, output is in instrument coordinates (theta, phi).
+        conf_level : float, optional
+            Confidence level for error region (default = 0.9).
 
         Returns
         -------
-        np.ndarray
-            Rotated HEALPix map
+        dict
+            Best localization result.
         """
+        
+        #s_counts = [100000,2000,2000,2000,2000,2000]
+        #b_counts = [1000,1000,1000,1000,1000,1000]
+        
+        #bgo_z1[keV] 1591
+        #bgo_z0[keV] 605
+        #bgo_x1[keV] 16835
+        #bgo_x0[keV] 257
+        #bgo_y1[keV] 1291
+        #bgo_y0[keV] 797
+                
+        #remap the counts following BGO IRF ['BGO_X0', 'BGO_X1', 'BGO_Y0', 'BGO_Y1', 'BGO_Z0', 'BGO_Z1']
 
-        data = ts_map.data
-        npix = len(data)
-        nside = hp.npix2nside(npix)
+    
+        #s_counts = np.array([257,16835,797,1491,605,1591])+np.random.poisson([100,100,100,100,100,100])
+        #b_counts = [100,100,100,100,100,100]
+        s_counts = s_counts[[3, 2, 5, 4, 1, 0]]
+        b_counts = b_counts[[3, 2, 5, 4, 1, 0]]
 
-        # all pixel directions
-        ipix = np.arange(npix)
-        theta, phi = hp.pix2ang(nside, ipix)
+        results = []
+    
+        if attitude is None:
+            soft_sky_loctable = self.loctables['soft'].to_skyloctable(
+                attitude=[0, 0, 0, 1],
+                duration=duration,
+                frame='icrs'
+            )
+            medium_sky_loctable = self.loctables['medium'].to_skyloctable(
+                attitude=[0, 0, 0, 1],
+                duration=duration,
+                frame='icrs'
+            )
+            hard_sky_loctable = self.loctables['hard'].to_skyloctable(
+                attitude=[0, 0, 0, 1],
+                duration=duration,
+                frame='icrs'
+            )
+            coordsys = "icrs"
+        else:
+            q = attitude.as_quat()
+            print(q)
 
-        # build "fake ICRS" coordinates
-        ra = phi * u.rad
-        dec = (np.pi/2 - theta) * u.rad
+            soft_sky_loctable = self.loctables['soft'].to_skyloctable(
+                attitude=q,
+                duration=duration,
+                frame='icrs'
+            )
+            medium_sky_loctable = self.loctables['medium'].to_skyloctable(
+                attitude=q,
+                duration=duration,
+                frame='icrs'
+            )
+            hard_sky_loctable = self.loctables['hard'].to_skyloctable(
+                attitude=q,
+                duration=duration,
+                frame='icrs'
+            )
+            coordsys = "icrs"
 
-        coords = SkyCoord(ra=ra, dec=dec, frame=ICRS())
+        self.luts = {
+            "soft": soft_sky_loctable,
+            "medium": medium_sky_loctable,
+            "hard": hard_sky_loctable,
+        }
+        
+        print(f"Soft Look-up tables: {self.luts['soft'].labels}")
 
-        # go through spacecraft frame (this applies the attitude rotation)
-        coords_sc = coords.transform_to(SpacecraftFrame(attitude=attitude))
+        for label, lut in self.luts.items():
+            lut.set_background(b_counts)
+            lut.set_data(s_counts)
 
-        # back to real sky
-        coords_real = coords_sc.transform_to(ICRS())
+            ts_map = TSMap(nside=self.nside, coordsys=coordsys)
+            likelihood = NormLocLike(lut)
+            ts_map.compute(likelihood)
 
-        # convert back to healpix angles
-        theta_new = np.pi/2 - coords_real.dec.to(u.rad).value
-        phi_new = coords_real.ra.to(u.rad).value
+            ts_value = float(np.max(ts_map))
+            best = ts_map.best_loc()
 
-        # interpolate rotated map
-        data_rot = hp.get_interp_val(data, theta_new, phi_new)
+            print(best)
+            print(best.frame)
 
-        return data_rot
+            cont_area = ts_map.error_area(cont=conf_level).to(u.deg**2)
+            eq_radius = np.sqrt(cont_area / np.pi).to(u.deg)
 
-    def localize(self, s_counts, b_counts, attitude=None, conf_level=0.9):
+            theta_out = -1.0
+            phi_out = -1.0
+            l_out = -1.0
+            b_out = -1.0
+
+            if attitude is None:
+                phi_out = float(best.spherical.lon.deg)
+                theta_out = float(90.0 - best.spherical.lat.deg)
+            else:
+                l_out = float(best.galactic.l.deg)
+                b_out = float(best.galactic.b.deg)
+                phi_out = float(best.galactic.l.deg)
+                theta_out = float(90.0 - best.galactic.b.deg)
+
+            results.append({
+                "theta_out": theta_out,
+                "phi_out": phi_out,
+                "l": l_out,
+                "b": b_out,
+                "label": label,
+                "ts_map": ts_map,
+                "ts_value": ts_value,
+                "sqrt_ts": float(np.sqrt(ts_value)),
+                "cont_area_deg2": float(cont_area.value),
+                "eq_radius_deg": float(eq_radius.value),
+            })
+
+        return max(results, key=lambda r: r["ts_value"])
+
+
+    def localize_old(self, s_counts, b_counts, attitude=None, conf_level=0.9,duration=1):
         """
         Run localization using all LUTs and return the one with the highest TS.
 
@@ -124,8 +213,11 @@ class BGOLocalizerBCT:
         #['BGO_Z1', 'BGO_Z0', 'BGO_X1', 'BGO_X0', 'BGO_Y1', 'BGO_Y0']
         #remap the counts following BGO IRF ['BGO_X0', 'BGO_X1', 'BGO_Y0', 'BGO_Y1', 'BGO_Z0', 'BGO_Z1']
         
-        s_counts = s_counts[[3, 2, 5, 4, 1, 0]]
-        b_counts = b_counts[[3, 2, 5, 4, 1, 0]]
+        s_counts = [2000,4000,2000,2000,2000]
+        b_counts = [1000,1000,1000,1000,1000]
+        
+        #s_counts = s_counts[[3, 2, 5, 4, 1, 0]]
+        #b_counts = b_counts[[3, 2, 5, 4, 1, 0]]
         
         print(s_counts)
         print(b_counts)
@@ -138,13 +230,17 @@ class BGOLocalizerBCT:
         # In this case we simply have a 1 second event and specifying the attitude by a quaternion
         # ([0,0,0,1] corresponds to the identity rotation). You can have multiple attitude-duration
         # pairs to correctly model long duration events.
-
-        print(self.loctables['soft'])
-   
-        soft_sky_loctable = self.loctables['soft'].to_skyloctable(attitude = attitude, duration = 1)
-        medium_sky_loctable = self.loctables['medium'].to_skyloctable(attitude = attitude, duration = 1)
-        hard_sky_loctable = self.loctables['hard'].to_skyloctable(attitude = attitude, duration = 1)
         
+        print(attitude.as_quat())
+
+        soft_sky_loctable = self.loctables['soft'].to_skyloctable(attitude = attitude.as_quat(), duration = duration,frame='galactic')
+        medium_sky_loctable = self.loctables['medium'].to_skyloctable(attitude = attitude.as_quat(), duration = duration,frame='galactic')
+        hard_sky_loctable = self.loctables['hard'].to_skyloctable(attitude = attitude.as_quat(), duration = duration,frame='galactic')
+
+        #soft_sky_loctable = self.loctables['soft'].to_skyloctable(attitude = [0,0,0,1], duration = duration)
+        #medium_sky_loctable = self.loctables['medium'].to_skyloctable(attitude = [0,0,0,1], duration = duration)
+        #hard_sky_loctable = self.loctables['hard'].to_skyloctable(attitude = [0,0,0,1], duration = duration)
+      
         self.luts = {
             "soft": soft_sky_loctable,
             "medium": medium_sky_loctable,
@@ -156,71 +252,96 @@ class BGOLocalizerBCT:
             lut.set_background(b_counts)
             lut.set_data(s_counts)
 
-            ts_map = TSMap(nside=self.nside, coordsys="icrs")
+            ts_map = TSMap(nside=self.nside, coordsys="galactic")
             likelihood = NormLocLike(lut)
             ts_map.compute(likelihood)
 
             ts_value = float(np.max(ts_map))
             best = ts_map.best_loc()
+            
+            print(best)
 
             cont_area = ts_map.error_area(cont=conf_level).to(u.deg**2)
             eq_radius = np.sqrt(cont_area / np.pi).to(u.deg)
-
+            
+            
             # Default outputs
             theta_out = -1.0
             phi_out = -1.0
             l_out = -1.0
             b_out = -1.0
+            
+            #best_gal = best.transform_to(Galactic())
+            best_gal = best
+            l_out = float(best_gal.l.deg)
+            b_out = float(best_gal.b.deg)
 
-            if attitude is None:
-                # return theta/phi (local)
-                ra = best.ra.to(u.rad).value
-                dec = best.dec.to(u.rad).value
+            """ if attitude is None:
+                # best is assumed to be in local/spacecraft-like coordinates
+                phi = best.spherical.lon.to(u.rad).value
+                lat = best.spherical.lat.to(u.rad).value
 
-                theta_out = np.pi / 2.0 - dec   # zenith
-                phi_out = ra                   # azimuth
+                theta_out = np.pi / 2.0 - lat   # zenith
+                phi_out = phi                   # azimuth
+
+                l_out = -1
+                b_out = -1
 
                 out_map = ts_map.data
 
             else:
-                # convert to galactic
-                ra = best.ra.to(u.rad).value
-                dec = best.dec.to(u.rad).value
-
-                theta = np.pi / 2.0 - dec
-                phi = ra
-
-                azimuth = phi * u.rad
-                zenith = theta * u.rad
+                # interpret best as local coordinates and convert to galactic
+                phi = best.spherical.lon
+                lat = best.spherical.lat
 
                 position_sc = SkyCoord(
-                    lon=azimuth,
-                    lat=90.0 * u.deg - zenith.to(u.deg),
+                    lon=phi,
+                    lat=lat,
                     frame=SpacecraftFrame(attitude=attitude)
                 )
 
                 position_gal = position_sc.transform_to(Galactic())
+                
+                
+                print("position_sc =", position_sc)
+                print("position_sc frame =", position_sc.frame)
+                print("position_sc frame name =", position_sc.frame.name)
+
+                position_gal = position_sc.transform_to(Galactic())
+
+                print("position_gal =", position_gal)
+                print("position_gal frame =", position_gal.frame)
+                print("position_gal frame name =", position_gal.frame.name)
+                print("position_gal class =", type(position_gal))
+
+
+                theta_out = -1
+                phi_out = -1
+                
+                print(position_gal)
 
                 l_out = float(position_gal.l.deg)
                 b_out = float(position_gal.b.deg)
-                
+
                 ts_map_rot = self.rotate_tsmap(ts_map, attitude)
-                
+
                 out_map = HealpixMap(
                     ts_map_rot,
                     nside=ts_map.nside,
                     coordsys=ts_map.coordsys
                 )
-
+                 """
+                
+                
             results.append({
+                "theta_out":theta_out,
+                "phi_out":phi_out,
+                "l":l_out,
+                "b":b_out,
                 "label": label,
-                "ts_map": out_map,
+                "ts_map": ts_map,
                 "ts_value": ts_value,
                 "sqrt_ts": float(np.sqrt(ts_value)),
-                "theta": float(theta_out),
-                "phi": float(phi_out),
-                "l": float(l_out),
-                "b": float(b_out),
                 "cont_area_deg2": float(cont_area.value),
                 "eq_radius_deg": float(eq_radius.value),
             })
