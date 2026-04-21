@@ -120,19 +120,19 @@ class BGOLocalizerBCT:
             soft_sky_loctable = self.loctables['soft'].to_skyloctable(
                 attitude=q,
                 duration=duration,
-                frame='icrs'
+                frame='galactic'
             )
             medium_sky_loctable = self.loctables['medium'].to_skyloctable(
                 attitude=q,
                 duration=duration,
-                frame='icrs'
+                frame='galactic'
             )
             hard_sky_loctable = self.loctables['hard'].to_skyloctable(
                 attitude=q,
                 duration=duration,
-                frame='icrs'
+                frame='galactic'
             )
-            coordsys = "icrs"
+            coordsys = "galactic"
 
         self.luts = {
             "soft": soft_sky_loctable,
@@ -168,10 +168,10 @@ class BGOLocalizerBCT:
                 phi_out = float(best.spherical.lon.deg)
                 theta_out = float(90.0 - best.spherical.lat.deg)
             else:
-                l_out = float(best.galactic.l.deg)
-                b_out = float(best.galactic.b.deg)
-                phi_out = float(best.galactic.l.deg)
-                theta_out = float(90.0 - best.galactic.b.deg)
+                l_out = float(best.l.deg)
+                b_out = float(best.b.deg)
+                phi_out = float(best.l.deg)
+                theta_out = float(90.0 - best.b.deg)
 
             results.append({
                 "theta_out": theta_out,
