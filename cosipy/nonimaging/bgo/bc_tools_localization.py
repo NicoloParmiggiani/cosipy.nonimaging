@@ -188,6 +188,21 @@ class BGOLocalizerBCT:
 
         return max(results, key=lambda r: r["ts_value"])
 
+    def print_loc_table_names(self):
+        
+        print(f"Soft Look-up tables: {self.luts['soft'].labels}")
+        print(f"Medium Look-up tables: {self.luts['medium'].labels}")
+        print(f"Hard Look-up tables: {self.luts['hard'].labels}")
+
+    def plot_loc_table(self,panel_name):
+        
+        sky_loctable = self.luts['soft']
+        sky_loctable.get_expectation_map(panel_name).plot()
+        sky_loctable = self.luts['medium']
+        sky_loctable.get_expectation_map(panel_name).plot()
+        sky_loctable = self.luts['hard']
+        sky_loctable.get_expectation_map(panel_name).plot()
+
 
     def localize_old(self, s_counts, b_counts, attitude=None, conf_level=0.9,duration=1):
         """
