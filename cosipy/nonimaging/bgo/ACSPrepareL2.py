@@ -6,7 +6,7 @@ import pandas as pd
 import h5py
 import matplotlib.pyplot as plt
 
-class BGOPrepareL2:
+class ACSPrepareL2:
 
     """
     Utility class for reading, rebinning, validating,
