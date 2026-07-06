@@ -419,7 +419,7 @@ class ACSDataAnalyzer:
 
         bkg_model.fit(order=order)
 
-        # ATTENZIONE: interpolate() restituisce RATE, non counts
+        #WARNING interpolate() return RATE, not counts
         bkg_rate, bkg_rate_err = bkg_model.interpolate(
             tstart=lc.lo_edges,
             tstop=lc.hi_edges
@@ -508,6 +508,9 @@ class ACSDataAnalyzer:
             label='Bayesian blocks',
             color="#1f77b4"
         )
+        
+        plt.xlabel("Time (s)")
+        plt.ylabel("Counts")
 
         # Vertical lines showing the start and stop of the identified signal
         plt.axvline(

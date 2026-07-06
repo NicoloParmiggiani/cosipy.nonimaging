@@ -85,10 +85,7 @@ class ACSLocalizerBCT:
         #bgo_y0[keV] 797
                 
         #remap the counts following BGO IRF ['BGO_X0', 'BGO_X1', 'BGO_Y0', 'BGO_Y1', 'BGO_Z0', 'BGO_Z1']
-
-    
-        #s_counts = np.array([257,16835,797,1491,605,1591])+np.random.poisson([100,100,100,100,100,100])
-        #b_counts = [100,100,100,100,100,100]
+        #change order of input to follow BGO IRF.  
         s_counts = s_counts[[3, 2, 5, 4, 1, 0]]
         b_counts = b_counts[[3, 2, 5, 4, 1, 0]]
 
