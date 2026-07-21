@@ -44,7 +44,7 @@ nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SecondaryElectrons_
 nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SecondaryPositrons_BGOhit_Total.csv.gz"  "$BASE_DIR/SecondaryPositrons_BGOhit_Total"  1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
 nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/PrimaryElectrons_BGOhit_Total.csv.gz"    "$BASE_DIR/PrimaryElectrons_BGOhit_Total"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
 nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SecondaryProtons_BGOhit_Total.csv.gz"    "$BASE_DIR/SecondaryProtons_BGOhit_Total"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
-nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SAAprotons_BGOhit_Total_part1.csv.gz"    "$BASE_DIR/SAAprotons_BGOhit_Total_part1"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
-nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SAAprotons_BGOhit_Total_part2.csv.gz"    "$BASE_DIR/SAAprotons_BGOhit_Total_part2"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
-nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SAAprotons_BGOhit_Total_part3.csv.gz"    "$BASE_DIR/SAAprotons_BGOhit_Total_part3"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
-nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SAAprotons_BGOhit_Total_part4.csv.gz"    "$BASE_DIR/SAAprotons_BGOhit_Total_part4"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
+nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SAAprotons_BGOhit_Total_part1_oneweek.csv.gz"    "$BASE_DIR/SAAprotons_BGOhit_Total_part1"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
+nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SAAprotons_BGOhit_Total_part2_oneweek.csv.gz"    "$BASE_DIR/SAAprotons_BGOhit_Total_part2"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
+nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SAAprotons_BGOhit_Total_part3_oneweek.csv.gz"    "$BASE_DIR/SAAprotons_BGOhit_Total_part3"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
+nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SAAprotons_BGOhit_Total_part4_oneweek.csv.gz"    "$BASE_DIR/SAAprotons_BGOhit_Total_part4"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &

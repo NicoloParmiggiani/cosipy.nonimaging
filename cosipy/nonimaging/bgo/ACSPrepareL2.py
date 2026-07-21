@@ -5,6 +5,7 @@ import os
 import pandas as pd
 import h5py
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 class ACSPrepareL2:
 
@@ -157,6 +158,162 @@ class ACSPrepareL2:
         t_centers = 0.5 * (edges[:-1] + edges[1:])
 
         return t_centers, rebinned_counts, dt, edges, n_samples
+    
+    def read_background_data(
+        self,
+        input_path,
+        event_time,
+        half_window=30.0,
+    ):
+        """
+        Load background event times and select a time window around an event.
+
+        Parameters
+        ----------
+        input_path : str or Path
+            Path to the NPZ file containing one array for each BGO panel.
+
+        event_time : float
+            Absolute event time in seconds.
+
+        half_window : float, optional
+            Half-width of the selected time window in seconds.
+            The default is 30 seconds.
+
+        Returns
+        -------
+        dict
+            Dictionary with keys z1, z0, x1, x0, y1, y0.
+            Each value is a NumPy array containing the event times inside
+            the interval:
+
+            [event_time - half_window, event_time + half_window)
+        """
+
+        input_path = Path(input_path)
+
+        if not input_path.exists():
+            raise FileNotFoundError(f"File not found: {input_path}")
+
+        if half_window <= 0:
+            raise ValueError("half_window must be greater than zero")
+
+        panel_names = ["z1", "z0", "x1", "x0", "y1", "y0"]
+
+        window_start = float(event_time) - float(half_window)
+        window_end = float(event_time) + float(half_window)
+
+        background_window = {}
+
+        with np.load(input_path) as data:
+
+            missing_panels = [
+                panel
+                for panel in panel_names
+                if panel not in data.files
+            ]
+
+            if missing_panels:
+                raise KeyError(
+                    f"Missing panels in {input_path.name}: {missing_panels}"
+                )
+
+            for panel in panel_names:
+
+                times = np.asarray(
+                    data[panel],
+                    dtype=float,
+                )
+
+                mask = (
+                    np.isfinite(times)
+                    & (times >= window_start)
+                    & (times < window_end)
+                )
+
+                selected_times = times[mask]
+                background_window[panel] = selected_times
+
+                print(
+                    f"{panel}: {selected_times.size:,} events "
+                    f"between t = {window_start:.2f} s "
+                    f"and t = {window_end:.2f} s"
+                )
+
+        return background_window
+
+ 
+    def read_grb_data_from_sim(self,grb_path, event_time):
+        """
+        Read a GRB file and return the absolute count times
+        for each BGO detector panel.
+
+        Parameters
+        ----------
+        grb_path : str or Path
+            Path to the GRB CSV file.
+
+        event_time : float
+            Absolute time used to shift the relative GRB timestamps.
+
+        Returns
+        -------
+        dict
+            Dictionary with the following keys:
+            z1, z0, x1, x0, y1, y0.
+
+            Each value is a NumPy array containing:
+            event_time + timestamp[s]
+        """
+
+        grb_path = Path(grb_path)
+
+        if not grb_path.exists():
+            raise FileNotFoundError(f"File not found: {grb_path}")
+
+        grb_df = pd.read_csv(grb_path)
+
+        panel_columns = {
+            "z1": "bgo_z1[keV]",
+            "z0": "bgo_z0[keV]",
+            "x1": "bgo_x1[keV]",
+            "x0": "bgo_x0[keV]",
+            "y1": "bgo_y1[keV]",
+            "y0": "bgo_y0[keV]",
+        }
+
+        required_columns = ["timestamp[s]", *panel_columns.values()]
+        missing_columns = [
+            column for column in required_columns
+            if column not in grb_df.columns
+        ]
+
+        if missing_columns:
+            raise ValueError(
+                f"Missing columns in {grb_path.name}: {missing_columns}"
+            )
+
+        timestamps = pd.to_numeric(
+            grb_df["timestamp[s]"],
+            errors="coerce",
+        )
+
+        grb_times_at_event = {}
+
+        for panel, energy_column in panel_columns.items():
+            energies = pd.to_numeric(
+                grb_df[energy_column],
+                errors="coerce",
+            )
+
+            valid_events = energies.gt(0) & timestamps.notna()
+            relative_times = timestamps.loc[valid_events].to_numpy(dtype=float)
+
+            grb_times_at_event[panel] = float(event_time) + relative_times
+
+        return grb_times_at_event
+
+
 
     def plot_lc(self,lc_data,detector_name):
      
@@ -211,6 +368,124 @@ class ACSPrepareL2:
         plt.legend()
         print(lc_data["name"])
         plt.show()
+        
+        
+    def plot_raw_data(
+        self,
+        panel_times,
+        event_time,
+        bin_width=0.050,
+        figsize=(14, 10),
+        data_label="Events",
+    ):
+        """
+        Plot event light curves for the six BGO panels.
+
+        Parameters
+        ----------
+        panel_times : dict
+            Dictionary with keys z1, z0, x1, x0, y1, y0.
+            Each value contains the event timestamps for one panel.
+
+        event_time : float
+            Absolute reference event time.
+
+        bin_width : float, optional
+            Bin width in seconds. Default is 0.050 s.
+
+        figsize : tuple, optional
+            Figure size.
+
+        data_label : str, optional
+            Label used in the figure title. Default is "Events".
+
+        Returns
+        -------
+        fig, axes, counts_per_detector
+            Figure, axes, and binned counts for each panel.
+        """
+
+        panel_order = ["z1", "z0", "x1", "x0", "y1", "y0"]
+
+        panel_data = {
+            panel: np.asarray(panel_times.get(panel, []), dtype=float)
+            for panel in panel_order
+        }
+
+        panel_data = {
+            panel: times[np.isfinite(times)]
+            for panel, times in panel_data.items()
+        }
+
+        valid_arrays = [
+            times
+            for times in panel_data.values()
+            if times.size > 0
+        ]
+
+        if not valid_arrays:
+            raise ValueError("No events available for plotting")
+
+        all_times = np.concatenate(valid_arrays)
+
+        t_min = np.floor(all_times.min() / bin_width) * bin_width
+        t_max = np.ceil(all_times.max() / bin_width) * bin_width
+
+        n_bins = int(np.ceil((t_max - t_min) / bin_width))
+
+        bin_edges = t_min + np.arange(n_bins + 1) * bin_width
+        bin_centers = bin_edges[:-1] + bin_width / 2.0
+
+        counts_per_detector = {
+            panel: np.histogram(times, bins=bin_edges)[0]
+            for panel, times in panel_data.items()
+        }
+
+        fig, axes = plt.subplots(
+            3,
+            2,
+            figsize=figsize,
+            sharex=True,
+        )
+
+        for ax, panel in zip(axes.flat, panel_order):
+            times = panel_data[panel]
+            counts = counts_per_detector[panel]
+            rate = counts / bin_width
+
+            ax.step(
+                bin_centers,
+                rate,
+                where="mid",
+                linewidth=1,
+            )
+
+            ax.axvline(
+                event_time,
+                linestyle="--",
+                linewidth=1,
+                label="Event time",
+            )
+
+            ax.set_title(
+                f"{panel.upper()} — {times.size:,} events"
+            )
+            ax.set_ylabel("Rate [counts/s]")
+            ax.grid(alpha=0.3)
+
+        for ax in axes[-1, :]:
+            ax.set_xlabel("Absolute time [s]")
+
+        fig.suptitle(
+            f"{data_label} in the six BGO panels — "
+            f"{bin_width * 1000:.0f} ms bins",
+            fontsize=14,
+        )
+
+        fig.tight_layout()
+        plt.show()
+
+        return fig, axes, counts_per_detector
 
     def sanity_checks(self, acs_lc, detector_list, tol=1e-6):
         """Check count conservation after rebinning."""

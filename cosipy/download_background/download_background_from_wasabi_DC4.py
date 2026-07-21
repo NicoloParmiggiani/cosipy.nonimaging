@@ -35,6 +35,7 @@ def main() -> None:
     data_dir = resolve_data_dir(args)
     
     albedo_photons = data_dir / "AlbedoPhotons_BGOhit_Total.csv.gz"
+    print(albedo_photons)
     if not albedo_photons.exists():
         fetch_wasabi_file(
             "COSI-SMEX/DC4/Data/Backgrounds/BGO/AlbedoPhotons_BGOhit_Total.csv.gz",
@@ -42,6 +43,7 @@ def main() -> None:
         )
 
     cosmic_photons = data_dir / "CosmicPhotons_BGOhit_Total.csv.gz"
+    print(cosmic_photons)
     if not cosmic_photons.exists():
         fetch_wasabi_file(
             "COSI-SMEX/DC4/Data/Backgrounds/BGO/CosmicPhotons_BGOhit_Total.csv.gz",
@@ -49,6 +51,7 @@ def main() -> None:
         )
 
     primary_alphas = data_dir / "PrimaryAlphas_BGOhit_Total.csv.gz"
+    print(primary_alphas)
     if not primary_alphas.exists():
         fetch_wasabi_file(
             "COSI-SMEX/DC4/Data/Backgrounds/BGO/PrimaryAlphas_BGOhit_Total.csv.gz",
@@ -56,6 +59,7 @@ def main() -> None:
         )
 
     primary_protons = data_dir / "PrimaryProtons_BGOhit_Total.csv.gz"
+    print(primary_protons)
     if not primary_protons.exists():
         fetch_wasabi_file(
             "COSI-SMEX/DC4/Data/Backgrounds/BGO/PrimaryProtons_BGOhit_Total.csv.gz",
@@ -63,6 +67,7 @@ def main() -> None:
         )
 
     secondary_electrons = data_dir / "SecondaryElectrons_BGOhit_Total.csv.gz"
+    print(secondary_electrons)
     if not secondary_electrons.exists():
         fetch_wasabi_file(
             "COSI-SMEX/DC4/Data/Backgrounds/BGO/SecondaryElectrons_BGOhit_Total.csv.gz",
@@ -70,6 +75,7 @@ def main() -> None:
         )
 
     secondary_positrons = data_dir / "SecondaryPositrons_BGOhit_Total.csv.gz"
+    print(secondary_positrons)
     if not secondary_positrons.exists():
         fetch_wasabi_file(
             "COSI-SMEX/DC4/Data/Backgrounds/BGO/SecondaryPositrons_BGOhit_Total.csv.gz",
@@ -77,6 +83,7 @@ def main() -> None:
         )
         
     secondary_protons = data_dir / "SecondaryProtons_BGOhit_Total.csv.gz"
+    print(secondary_protons)
     if not secondary_protons.exists():
         fetch_wasabi_file(
             "COSI-SMEX/DC4/Data/Backgrounds/BGO/SecondaryProtons_BGOhit_Total.csv.gz",
@@ -84,6 +91,7 @@ def main() -> None:
         )
         
     albedo_neutrons = data_dir / "AlbedoNeutrons_BGOhit_Total.csv.gz"
+    print(albedo_neutrons)
     if not albedo_neutrons.exists():
         fetch_wasabi_file(
             "COSI-SMEX/DC4/Data/Backgrounds/BGO/AlbedoNeutrons_BGOhit_Total.csv.gz",
@@ -91,44 +99,50 @@ def main() -> None:
         )
         
     primary_electron = data_dir / "PrimaryElectrons_BGOhit_Total.csv.gz"
+    print(primary_electron)
     if not primary_electron.exists():
         fetch_wasabi_file(
             "COSI-SMEX/DC4/Data/Backgrounds/BGO/PrimaryElectrons_BGOhit_Total.csv.gz",
             primary_electron,
         )
         
-    saa_protons_part1 = data_dir / "SAAprotons_BGOhit_Total_part1.csv.gz"
+    saa_protons_part1 = data_dir / "SAAprotons_BGOhit_Total_part1_oneweek.csv.gz"
+    print(saa_protons_part1)
     if not saa_protons_part1.exists():
         fetch_wasabi_file(
-            "COSI-SMEX/DC4/Data/Backgrounds/BGO/SAAprotons_BGOhit_Total_part1.csv.gz",
+            "COSI-SMEX/DC4/Data/Backgrounds/BGO/SAAprotons_BGOhit_Total_part1_oneweek.csv.gz",
             saa_protons_part1,
         )
         
-    saa_protons_part2 = data_dir / "SAAprotons_BGOhit_Total_part2.csv.gz"
+    saa_protons_part2 = data_dir / "SAAprotons_BGOhit_Total_part2_oneweek.csv.gz"
+    print(saa_protons_part2)
     if not saa_protons_part2.exists():
         fetch_wasabi_file(
-            "COSI-SMEX/DC4/Data/Backgrounds/BGO/SAAprotons_BGOhit_Total_part2.csv.gz",
+            "COSI-SMEX/DC4/Data/Backgrounds/BGO/SAAprotons_BGOhit_Total_part2_oneweek.csv.gz",
             saa_protons_part2,
         )
         
-    saa_protons_part3 = data_dir / "SAAprotons_BGOhit_Total_part3.csv.gz"
+    saa_protons_part3 = data_dir / "SAAprotons_BGOhit_Total_part3_oneweek.csv.gz"
+    print(saa_protons_part3)
     if not saa_protons_part3.exists():
         fetch_wasabi_file(
-            "COSI-SMEX/DC4/Data/Backgrounds/BGO/SAAprotons_BGOhit_Total_part3.csv.gz",
+            "COSI-SMEX/DC4/Data/Backgrounds/BGO/SAAprotons_BGOhit_Total_part3_oneweek.csv.gz",
             saa_protons_part3,
         )
         
-    saa_protons_part4 = data_dir / "SAAprotons_BGOhit_Total_part4.csv.gz"
+    saa_protons_part4 = data_dir / "SAAprotons_BGOhit_Total_part4_oneweek.csv.gz"
+    print(saa_protons_part4)
     if not saa_protons_part4.exists():
         fetch_wasabi_file(
-            "COSI-SMEX/DC4/Data/Backgrounds/BGO/SAAprotons_BGOhit_Total_part4.csv.gz",
+            "COSI-SMEX/DC4/Data/Backgrounds/BGO/SAAprotons_BGOhit_Total_part4_oneweek.csv.gz",
             saa_protons_part4,
         )
         
-    ori_file = data_dir / "DC4_format_6_month_EarthGalactic_correct_timing.ori.zip"
+    ori_file = data_dir / "DC4_final_530km_3_month_with_slew_1sbins_GalacticEarth_SAA.ori"
+    print(ori_file)
     if not ori_file.exists():
         fetch_wasabi_file(
-            "COSI-SMEX/DC4/Data/Orientation/DC4_format_6_month_EarthGalactic_correct_timing.ori.zip",
+            "COSI-SMEX/DC4/Data/Orientation/DC4_final_530km_3_month_with_slew_1sbins_GalacticEarth_SAA.ori",
             ori_file,
         )
 
