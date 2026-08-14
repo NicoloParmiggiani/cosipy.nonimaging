@@ -229,13 +229,13 @@ class ACSDataAnalyzer:
         signal["x1"] = np.asarray(pan["SCBC_A0"])
         signal["x0"] = np.asarray(pan["SCBC_A1"])
 
-        # se sono rate → converto a counts
+        # if rate -> convert to counts
         if isRate:
             for k in signal:
                 signal[k] = signal[k] * exposure
 
         # =========================
-        # COSTRUZIONE LIGHT CURVES
+        # LIGHT CURVES CONTSRUCTION
         # =========================
         lc = {}
 
@@ -254,25 +254,33 @@ class ACSDataAnalyzer:
         best_value = float('-inf')
 
         for panel in panels:
-            value = np.max(lc[panel].counts)
+            value = np.max(lc[panel].rates)
 
             if value > best_value:
                 best_value = value
                 best_panel = panel
 
+        print(best_panel)
         lc_sel = lc[best_panel]
+        
+        print(lc_sel)
 
         # =========================
         # BAYESIAN BLOCKS
         # =========================
         try:
+            
             bb_lc = BayesianBlocksLightcurve(lc_sel)
-            bb_lc.compute_bayesian_blocks(p0=p0)
-
+            #self.plot_lc(lc_sel,bb_lc,None, save=False,prefix="")
+            
+            
+            bb_lc.compute_bayesian_blocks()#p0=p0,max_iter=1
+            
             signal_range = bb_lc.signal_range
-
             t90 = bb_lc.duration(quantile=.9)
             t90_error = bb_lc.duration_error(.9, nsamples=100)
+            t90_tstart,t90_tstop = bb_lc.quantile_range(quantile=.9)
+           
 
         except Exception as e:
             print(e)
@@ -295,11 +303,11 @@ class ACSDataAnalyzer:
         # =========================
         # SIGNAL + BACKGROUND
         # =========================
-        signal_lc = lc_sel.slice(signal_range.tstart, signal_range.tstop)
+        signal_lc = lc_sel.slice(t90_tstart, t90_tstop)
 
         # background prima e dopo (FIX rispetto al tuo codice originale)
-        bkg_lc1 = lc_sel.slice(lc_sel.centroids[0], signal_range.tstart)
-        bkg_lc2 = lc_sel.slice(signal_range.tstop, lc_sel.centroids[-1])
+        bkg_lc1 = lc_sel.slice(lc_sel.centroids[0], t90_tstart)
+        bkg_lc2 = lc_sel.slice(t90_tstop, lc_sel.centroids[-1])
 
         t_on = np.sum(signal_lc.exposure)
         t_off = np.sum(bkg_lc1.exposure) + np.sum(bkg_lc2.exposure)
@@ -320,29 +328,29 @@ class ACSDataAnalyzer:
         else:
             S = 0
 
-        # =========================
-        # PEAK SIGNIFICANCE
-        # =========================
-        significance = []
+        # # =========================
+        # # PEAK SIGNIFICANCE
+        # # =========================
+        # significance = []
 
-        for rate, exp in zip(signal_lc.rates, signal_lc.exposure):
-            N_on_bin = rate * exp
-            alpha_bin = exp / t_off if t_off > 0 else 0
+        # for rate, exp in zip(signal_lc.rates, signal_lc.exposure):
+        #     N_on_bin = rate * exp
+        #     alpha_bin = exp / t_off if t_off > 0 else 0
 
-            if alpha_bin > 0 and N_on_bin > 0 and N_off > 0:
-                S_bin = np.sqrt(2) * (
-                    N_on_bin * np.log(((1 + alpha_bin) / alpha_bin) *
-                                    (N_on_bin / (N_on_bin + N_off))) +
-                    N_off * np.log((1 + alpha_bin) *
-                                (N_off / (N_on_bin + N_off)))
-                )**0.5
-            else:
-                S_bin = 0
+        #     if alpha_bin > 0 and N_on_bin > 0 and N_off > 0:
+        #         S_bin = np.sqrt(2) * (
+        #             N_on_bin * np.log(((1 + alpha_bin) / alpha_bin) *
+        #                             (N_on_bin / (N_on_bin + N_off))) +
+        #             N_off * np.log((1 + alpha_bin) *
+        #                         (N_off / (N_on_bin + N_off)))
+        #         )**0.5
+        #     else:
+        #         S_bin = 0
 
-            significance.append(S_bin)
+        #     significance.append(S_bin)
 
-        significance = np.array(significance)
-        S_peak = np.max(significance)
+        # significance = np.array(significance)
+        # S_peak = np.max(significance)
 
         # =========================
         # OUTPUT
@@ -351,13 +359,13 @@ class ACSDataAnalyzer:
             "lc_sel": lc_sel,
             "bb_lc": bb_lc,
             "lc": lc,
-            "signal_tstart": signal_range.tstart,
-            "signal_tstop": signal_range.tstop,
+            "signal_tstart":t90_tstart,
+            "signal_tstop": t90_tstop,
             "t90": t90,
             "t90_err_low": t90_error[0],
             "t90_err_high": t90_error[1],
             "significance": S,
-            "significance_peak": S_peak,
+            "significance_peak": -1,
             "t_min": t_min,
             "t_max": t_max
         }
@@ -394,8 +402,8 @@ class ACSDataAnalyzer:
             - "net_rate"        : rate osservato - background rate
         """
 
-        tstart_sig = signal_range.tstart
-        tstop_sig = signal_range.tstop
+        tstart_sig = signal_range[0]
+        tstop_sig = signal_range[1]
         excl_start = tstart_sig - buffer
         excl_stop = tstop_sig + buffer
 
@@ -451,10 +459,9 @@ class ACSDataAnalyzer:
             "net_rate": net_rate,
         }
 
-    def plot_lc(self, lc_sel, bb_lc, save=False,prefix=""):
+    def plot_lc(self, lc_sel, bb_lc,signal_range, save=False,prefix=""):
 
-        signal_range = bb_lc.signal_range
-
+        
         # =========================
         # RAW LIGHT CURVE
         # =========================
@@ -500,6 +507,7 @@ class ACSDataAnalyzer:
         )
 
         lc_bayes = bb_lc.bb_lightcurve
+        print(lc_bayes)
 
         plt.plot(
             np.append(lc_bayes.lo_edges, lc_bayes.hi_edges[-1]),
@@ -512,19 +520,20 @@ class ACSDataAnalyzer:
         plt.xlabel("Time (s)")
         plt.ylabel("Counts")
 
-        # Vertical lines showing the start and stop of the identified signal
-        plt.axvline(
-            bb_lc.signal_range.tstart,
-            ls="--",
-            color='olive',
-            label="Signal start/stop"
-        )
+        if signal_range is not None:
+            # Vertical lines showing the start and stop of the identified signal
+            plt.axvline(
+                signal_range[0],
+                ls="--",
+                color='olive',
+                label="Signal start/stop"
+            )
 
-        plt.axvline(
-            bb_lc.signal_range.tstop,
-            ls="--",
-            color='olive'
-        )
+            plt.axvline(
+                signal_range[1],
+                ls="--",
+                color='olive'
+            )
 
         plt.legend()
 
@@ -567,8 +576,8 @@ class ACSDataAnalyzer:
         )
 
         plt.axvspan(
-            signal_range.tstart,
-            signal_range.tstop,
+            signal_range[0],
+            signal_range[1],
             alpha=0.2,
             label="Signal window",
             color="#1f77b4"
@@ -594,38 +603,40 @@ class ACSDataAnalyzer:
         else:
             plt.show()
 
-    def extract_source_data_from_fits(self,fits_path,plot=False,save_plot=False,prefix="",panels = ['z1','z0','x1','x0','y1','y0']):
+    def extract_source_data_from_fits(self,fits_path,plot=False,save_plot=False,prefix="",panels = ['z1','z0','x1','x0','y1','y0'],p0=0.05):
         
         t_min,t_max,event_panels = self.open_fits_file(fits_path)
         
         light_curve = {"t_min":t_min,"t_max":t_max,"panels":event_panels}
         
         # compute the TimeBins LC, time_start, time_stop, t90 and Li&Ma signfiicance
-        bblocks_analysis_results = self.analyze_lc_with_bblocks(light_curve, p0=10e-5, isRate=False, panels=panels)
+        bblocks_analysis_results = self.analyze_lc_with_bblocks(light_curve, p0=p0, isRate=False, panels=panels)
         
         acs_lc = bblocks_analysis_results['lc']
         event_time_start = bblocks_analysis_results['signal_tstart']
         lc_sel = bblocks_analysis_results['lc_sel']
         bb_lc = bblocks_analysis_results['bb_lc']
+        t90_tstart = bblocks_analysis_results['signal_tstart']
+        t90_tstop = bblocks_analysis_results['signal_tstop']
         
         if bb_lc is None:
             return -1,-1,-1,-1
-        signal_range = bb_lc.signal_range
+        signal_range = (t90_tstart,t90_tstop)
         
         #convert event time start from TT to Unix time stamp
         mjd_ref_timestamp = 1735689669.184
         event_time_start_unix = mjd_ref_timestamp + event_time_start
         
         if plot:
-            self.plot_lc(lc_sel,bb_lc,save=save_plot,prefix=prefix)
+            self.plot_lc(lc_sel,bb_lc,signal_range,save=save_plot,prefix=prefix)
 
         results = []
         s_counts = []
         b_counts = []
 
 
-        tstart = signal_range.tstart
-        tstop = signal_range.tstop
+        tstart = t90_tstart
+        tstop = t90_tstop
         duration = tstop-tstart
         for p in panels:
         
@@ -635,14 +646,67 @@ class ACSDataAnalyzer:
             results.append(res)
             
             # maschera della finestra del segnale
-            mask_sig = (lc.lo_edges >= tstart) & (lc.hi_edges <= tstop)
+            # --------------------------------------------------
+            # SAME BINS FOR SOURCE AND BACKGROUND
+            # --------------------------------------------------
+            mask_sig = (
+                (lc.hi_edges > tstart) &
+                (lc.lo_edges < tstop)
+            )
 
-            # somme nella finestra [tstart, tstop]
+            selected_indices = np.where(mask_sig)[0]
+
+            # print("\n" + "=" * 80)
+            # print(f"PANEL: {p}")
+            # print(f"Signal window requested: [{tstart:.12f}, {tstop:.12f}]")
+            # print(f"Signal window duration : {tstop - tstart:.12f} s")
+            # print(f"Number of selected bins: {len(selected_indices)}")
+            # print("-" * 80)
+
+            for i in selected_indices:
+
+                lo = lc.lo_edges[i]
+                hi = lc.hi_edges[i]
+                exp = lc.exposure[i]
+
+                src_counts_bin = lc.counts[i]
+                bkg_counts_bin = res["bkg_counts"][i]
+
+            #     print(
+            #         f"bin {i:5d} | "
+            #         f"[{lo:.12f}, {hi:.12f}] | "
+            #         f"width={hi-lo:.12f} | "
+            #         f"exp={exp:.12f} | "
+            #         f"source={src_counts_bin:.6f} | "
+            #         f"background={bkg_counts_bin:.6f}"
+            #     )
+
+            # print("-" * 80)
+
             signal_counts = np.sum(lc.counts[mask_sig])
             background_counts = np.sum(res["bkg_counts"][mask_sig])
-           
+
+            # print(f"TOTAL source counts     = {signal_counts:.6f}")
+            # print(f"TOTAL background counts = {background_counts:.6f}")
+
+            # if len(selected_indices) > 0:
+            #     first_bin = selected_indices[0]
+            #     last_bin = selected_indices[-1]
+
+            #     print(
+            #         f"Actual selected window  = "
+            #         f"[{lc.lo_edges[first_bin]:.12f}, "
+            #         f"{lc.hi_edges[last_bin]:.12f}]"
+            #     )
+
+            #     print(
+            #         f"Actual selected duration = "
+            #         f"{lc.hi_edges[last_bin] - lc.lo_edges[first_bin]:.12f} s"
+            #     )
+
+            # print("=" * 80)
             s_counts.append(signal_counts)
-            b_counts.append(round(background_counts,3))
+            b_counts.append(background_counts)
             
             if plot:
                 self.plot_background(lc,res,signal_range,signal_counts,background_counts,p,save=save_plot,prefix=prefix)

@@ -151,6 +151,70 @@ def open_and_read_csv_counts_DC4(file):
         "y0": bgo_times.get("SCB1-A0[keV]", empty)
     }
 
+def open_and_read_csv_counts_DC4_v22(file):
+
+    print("DC4_v22")
+
+    # File di riferimento SAA
+    ori_df = pd.read_csv(
+        ori_path,
+        sep=r"\s+",
+        names=[
+            "Type", "unix_time",
+            "x1", "x2", "x3", "x4", "x5", "x6", "x7",
+            "SAA"
+        ],
+        usecols=["unix_time", "SAA"],
+        skiprows=1
+    )
+
+    ori_df[["unix_time", "SAA"]] = ori_df[
+        ["unix_time", "SAA"]
+    ].apply(pd.to_numeric, errors="coerce")
+
+    ori_df = (
+        ori_df.replace([np.inf, -np.inf], np.nan)
+        .dropna()
+        .sort_values("unix_time")
+        .drop_duplicates("unix_time")
+        .set_index("unix_time")
+    )
+
+    # File ACS
+    df = pd.read_csv(file, compression="infer")
+
+    acs_columns = [
+        "ACS_z1", "ACS_z0",
+        "ACS_x1", "ACS_x0",
+        "ACS_y1", "ACS_y0"
+    ]
+
+    df[["timestamp[s]"] + acs_columns] = df[
+        ["timestamp[s]"] + acs_columns
+    ].apply(pd.to_numeric, errors="coerce")
+
+    df = (
+        df.replace([np.inf, -np.inf], np.nan)
+        .dropna(subset=["timestamp[s]"])
+        .sort_values("timestamp[s]")
+        .set_index("timestamp[s]")
+    )
+
+    df["SAA"] = ori_df.reindex(
+        df.index,
+        method="nearest"
+    )["SAA"].to_numpy()
+
+    df = df[df["SAA"].notna() & df["SAA"].ne(0)]
+
+    return {
+        axis: df.index[
+            df[f"ACS_{axis}"].between(80.0, 2000.0)
+        ].to_numpy(dtype=float)
+        for axis in ("z1", "z0", "x1", "x0", "y1", "y0")
+    }
+    
+    
 if data_challenge == "DC3":
 
     data_preprocessed = open_and_read_csv_counts_DC3(file_path)
@@ -158,6 +222,10 @@ if data_challenge == "DC3":
 elif data_challenge == "DC4":
     
     data_preprocessed = open_and_read_csv_counts_DC4(file_path)
+    
+elif data_challenge == "DC4_v22":
+    
+    data_preprocessed = open_and_read_csv_counts_DC4_v22(file_path)
     
 else:
     print("Invalid data challenge selected")
