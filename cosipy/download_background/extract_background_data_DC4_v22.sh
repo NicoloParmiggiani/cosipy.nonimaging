@@ -36,13 +36,13 @@ fi
 
 
 
-nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/AlbedoNeutrons_BGOhit_Total.csv.gz"      "$BASE_DIR/AlbedoNeutrons_BGOhit_Total"      1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
-nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/AlbedoPhotons_BGOhit_Total.csv.gz"       "$BASE_DIR/AlbedoPhotons_BGOhit_Total"       1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
-nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/CosmicPhotons_BGOhit_Total.csv.gz"       "$BASE_DIR/CosmicPhotons_BGOhit_Total"       1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
-nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/PrimaryAlphas_BGOhit_Total.csv.gz"       "$BASE_DIR/PrimaryAlphas_BGOhit_Total"       1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
-nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/PrimaryProtons_BGOhit_Total.csv.gz"      "$BASE_DIR/PrimaryProtons_BGOhit_Total"      1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
-nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SecondaryElectrons_BGOhit_Total.csv.gz"  "$BASE_DIR/SecondaryElectrons_BGOhit_Total"  1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
-nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SecondaryPositrons_BGOhit_Total.csv.gz"  "$BASE_DIR/SecondaryPositrons_BGOhit_Total"  1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
-#nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/PrimaryElectrons_BGOhit_Total.csv.gz"    "$BASE_DIR/PrimaryElectrons_BGOhit_Total"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
-nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SecondaryProtons_BGOhit_Total.csv.gz"    "$BASE_DIR/SecondaryProtons_BGOhit_Total"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
-nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SAAprotons_BGOhit_Total.csv.gz"    "$BASE_DIR/SAAprotons_BGOhit_Total"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
+nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/AlbedoNeutrons_BGOhit_Total.csv.gz"      "$BASE_DIR/AlbedoNeutrons_BGOhit_all"      1 1 "$ORI_FILE" "$DATA_CHALLENGE"  &
+nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/AlbedoPhotons_BGOhit_Total.csv.gz"       "$BASE_DIR/AlbedoPhotons_BGOhit_all"       1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
+nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/CosmicPhotons_BGOhit_Total.csv.gz"       "$BASE_DIR/CosmicPhotons_BGOhit_all"       1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
+nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/PrimaryAlphas_BGOhit_Total.csv.gz"       "$BASE_DIR/PrimaryAlphas_BGOhit_all"       1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
+nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/PrimaryProtons_BGOhit_Total.csv.gz"      "$BASE_DIR/PrimaryProtons_BGOhit_all"      1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
+nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SecondaryElectrons_BGOhit_Total.csv.gz"  "$BASE_DIR/SecondaryElectrons_BGOhit_all"  1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
+nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SecondaryPositrons_BGOhit_Total.csv.gz"  "$BASE_DIR/SecondaryPositrons_BGOhit_all"  1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
+#nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/PrimaryElectrons_BGOhit_Total.csv.gz"    "$BASE_DIR/PrimaryElectrons_BGOhit_all"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
+nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SecondaryProtons_BGOhit_Total.csv.gz"    "$BASE_DIR/SecondaryProtons_BGOhit_all"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &
+nohup python "$SCRIPT_DIR/extract_lc_from_csv.py" "$BASE_DIR/SAAprotons_BGOhit_Total.csv.gz"    "$BASE_DIR/SAAprotons_BGOhit_all"    1 1 "$ORI_FILE" "$DATA_CHALLENGE" &

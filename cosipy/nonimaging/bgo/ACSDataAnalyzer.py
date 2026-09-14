@@ -260,10 +260,10 @@ class ACSDataAnalyzer:
                 best_value = value
                 best_panel = panel
 
-        print(best_panel)
+        #print(best_panel)
         lc_sel = lc[best_panel]
         
-        print(lc_sel)
+        #print(lc_sel)
 
         # =========================
         # BAYESIAN BLOCKS
@@ -616,6 +616,7 @@ class ACSDataAnalyzer:
         event_time_start = bblocks_analysis_results['signal_tstart']
         lc_sel = bblocks_analysis_results['lc_sel']
         bb_lc = bblocks_analysis_results['bb_lc']
+        print(bblocks_analysis_results['signal_tstart'])
         t90_tstart = bblocks_analysis_results['signal_tstart']
         t90_tstop = bblocks_analysis_results['signal_tstop']
         
@@ -624,7 +625,8 @@ class ACSDataAnalyzer:
         signal_range = (t90_tstart,t90_tstop)
         
         #convert event time start from TT to Unix time stamp
-        mjd_ref_timestamp = 1735689669.184
+        #mjd_ref_timestamp = 1735689669.184
+        mjd_ref_timestamp = 1735689600.184
         event_time_start_unix = mjd_ref_timestamp + event_time_start
         
         if plot:

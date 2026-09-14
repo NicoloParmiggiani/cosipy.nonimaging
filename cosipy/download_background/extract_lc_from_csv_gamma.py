@@ -20,7 +20,6 @@ separate_panels = float(sys.argv[4])
 ori_path = sys.argv[5]
 data_challenge = sys.argv[6]
 
-
 def open_and_read_csv_counts_DC3(file):
     
     col_names = [
@@ -207,15 +206,14 @@ def open_and_read_csv_counts_DC4_v22(file):
     )["SAA"].to_numpy()
 
     df = df[df["SAA"].notna() & df["SAA"].ne(0)]
-    
-  
+
     return {
         axis: df.index[
-            df[f"ACS_{axis}"] > 80.0
+            df[f"ACS_{axis}"].between(80.0, 2000.0)
         ].to_numpy(dtype=float)
         for axis in ("z1", "z0", "x1", "x0", "y1", "y0")
     }
-        
+    
     
 if data_challenge == "DC3":
 
