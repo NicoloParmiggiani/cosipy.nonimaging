@@ -162,7 +162,7 @@ class ACSDataAnalyzer:
         
         return t_min,t_max,panels
     
-    def analyze_lc_with_bblocks(self,lightcurve, p0=0.05, isRate=False,panels=['z1', 'z0', 'x1', 'x0', 'y1', 'y0'], bkg_buffer=1.0, bkg_order=2):
+    def analyze_lc_with_bblocks(self,lightcurve, p0=0.05, isRate=False,panels=['z1', 'z0', 'x1', 'x0', 'y1', 'y0'], bkg_buffer=1.0, bkg_order=2, sanity_check=False):
         """
         Analyze the light curve data.
 
@@ -186,6 +186,7 @@ class ACSDataAnalyzer:
             - panels: internal panel names to analyze (x,y,z convention)
             - bkg_buffer: extra time excluded around the T90 window in the background fit
             - bkg_order: polynomial order of the background fit
+            - sanity_check: if True, attach a "sanity" diagnostics dict to the output
 
         Output:
             dictionary containing:
@@ -199,6 +200,7 @@ class ACSDataAnalyzer:
                     "bkg_fits": polynomial background fits reused later,
                     "panel_snr": per-panel peak SNR diagnostics,
                     "snr_bin_selection": greedy high-SNR bin set from the best panel,
+                    "sanity": diagnostics dict if sanity_check=True, else None,
                     "signal_tstart": signal start time,
                     "signal_tstop": signal stop time,
                     "t90": T90 duration,
@@ -286,6 +288,7 @@ class ACSDataAnalyzer:
                 "bkg_fits": {},
                 "panel_snr": {},
                 "snr_bin_selection": None,
+                "sanity": None,
                 "signal_tstart": -9999,
                 "signal_tstop": -9999,
                 "t90": -9999,
@@ -429,6 +432,32 @@ class ACSDataAnalyzer:
         # significance = np.array(significance)
         # S_peak = np.max(significance)
 
+        sanity = None
+        if sanity_check:
+            snr_sel = snr_bin_selection or {}
+            selected_bins = np.asarray(snr_sel.get("indices_time", []), dtype=int)
+            selected_time_range = None
+            if selected_bins.size > 0:
+                selected_time_range = (
+                    float(lc_sel.lo_edges[selected_bins].min()),
+                    float(lc_sel.hi_edges[selected_bins].max()),
+                )
+
+            sanity = {
+                "best_panel": best_panel,
+                "best_snr": best_snr,
+                "seed_panel": seed_panel,
+                "bb_recomputed": best_panel != seed_panel,
+                "selection_criterion": "SNR = sqrt((d - b) / d) on the peak-rate bin",
+                "t90_window": (float(t90_tstart), float(t90_tstop)),
+                "peak_bin": panel_snr.get(best_panel, {}),
+                "panel_snr": panel_snr,
+                "snr_bin_selection": snr_bin_selection,
+                "selected_bins": selected_bins,
+                "selected_time_range": selected_time_range,
+                "panels": list(panels),
+            }
+
         # =========================
         # OUTPUT
         # =========================
@@ -442,6 +471,7 @@ class ACSDataAnalyzer:
             "bkg_fits": bkg_fits,
             "panel_snr": panel_snr,
             "snr_bin_selection": snr_bin_selection,
+            "sanity": sanity,
             "signal_tstart":t90_tstart,
             "signal_tstop": t90_tstop,
             "t90": t90,
@@ -783,22 +813,126 @@ class ACSDataAnalyzer:
         else:
             plt.show()
 
+    def print_panel_snr_sanity_check(self, results):
+        """
+        Print panel and bin-selection diagnostics from an analysis result dict.
+        Requires extract_source_data_from_fits(..., sanity_check=True).
+        """
+
+        sanity = results.get("sanity")
+        if not sanity:
+            print("No sanity-check results. Re-run with sanity_check=True.")
+            return
+
+        panels = sanity.get("panels") or list((results.get("panel_snr") or {}).keys())
+        best_panel = sanity.get("best_panel", results.get("best_panel"))
+        seed_panel = sanity.get("seed_panel", results.get("seed_panel"))
+        best_snr = sanity.get("best_snr", results.get("best_snr"))
+        panel_snr = sanity.get("panel_snr") or results.get("panel_snr") or {}
+        snr_sel = sanity.get("snr_bin_selection") or results.get("snr_bin_selection") or {}
+        peak = sanity.get("peak_bin") or {}
+        t90_window = sanity.get("t90_window")
+        selected_bins = np.asarray(sanity.get("selected_bins", []), dtype=int)
+
+        print("\n" + "=" * 80)
+        print("SANITY CHECK: panel selection")
+        print("=" * 80)
+        print(f"Seed panel (max rate, used for first T90): {seed_panel}")
+        print(f"Selected panel (max peak SNR):             {best_panel}")
+        print(f"Selection criterion: {sanity.get('selection_criterion', '')}")
+        if t90_window is not None:
+            print(
+                f"T90 window: [{t90_window[0]:.6f}, {t90_window[1]:.6f}] s "
+                f"(duration={t90_window[1] - t90_window[0]:.6f} s)"
+            )
+        print(
+            f"Selected peak bin: index={peak.get('ipeak', 'n/a')} | "
+            f"[{peak.get('t_lo', np.nan):.6f}, {peak.get('t_hi', np.nan):.6f}] s | "
+            f"center={peak.get('t_center', np.nan):.6f} s"
+        )
+        print(
+            f"Selected peak counts: d={peak.get('d', np.nan):.4f} | "
+            f"b={peak.get('b', np.nan):.4f} | "
+            f"SNR={best_snr:.4f}"
+        )
+        if sanity.get("bb_recomputed"):
+            print(
+                f"Bayesian blocks were recomputed on {best_panel} "
+                f"(different from seed {seed_panel})"
+            )
+        else:
+            print(f"Bayesian blocks kept on seed panel {seed_panel}")
+
+        print("-" * 80)
+        print("SNR bin selection on the best panel (guide for all panels)")
+        print(
+            f"Selected bins: {selected_bins.size} | "
+            f"greedy order={list(snr_sel.get('indices', []))} | "
+            f"time order={list(selected_bins)}"
+        )
+        print(
+            f"Cumulative optimal SNR={snr_sel.get('snr_optimal', np.nan):.4f} | "
+            f"d_sum={snr_sel.get('d_sum', np.nan):.3f} | "
+            f"b_sum={snr_sel.get('b_sum', np.nan):.3f}"
+        )
+        selected_time_range = sanity.get("selected_time_range")
+        if selected_time_range is not None:
+            print(
+                f"Time coverage of selected bins: "
+                f"[{selected_time_range[0]:.6f}, {selected_time_range[1]:.6f}] s"
+            )
+
+        print("-" * 80)
+        print(
+            f"{'panel':<8} {'sel':<5} {'ipeak':>7} {'t_center':>12} "
+            f"{'d':>10} {'b':>10} {'SNR':>8}"
+        )
+        for p in panels:
+            info = panel_snr.get(p, {})
+            mark = "<--" if p == best_panel else ""
+            print(
+                f"{p:<8} {mark:<5} {info.get('ipeak', -1):>7d} "
+                f"{info.get('t_center', np.nan):>12.4f} "
+                f"{info.get('d', np.nan):>10.3f} "
+                f"{info.get('b', np.nan):>10.3f} "
+                f"{info.get('snr', np.nan):>8.4f}"
+            )
+
+        if "s_counts" in sanity:
+            print("-" * 80)
+            print("Signal counts per panel:", sanity["s_counts"])
+            print("Background counts per panel:", sanity["b_counts"])
+        print("=" * 80 + "\n")
+
     def plot_panel_snr_sanity_check(
         self,
-        acs_lc,
-        bkg_fits,
-        panel_snr,
-        panels,
-        best_panel,
-        seed_panel,
-        signal_range,
-        snr_bin_selection=None,
+        results,
         save=False,
         prefix=""
     ):
         """
-        Plot all ACS panels with peak-bin and T90 markers used for SNR selection.
+        Plot panel and bin-selection diagnostics from an analysis result dict.
+        Requires extract_source_data_from_fits(..., sanity_check=True).
         """
+
+        sanity = results.get("sanity")
+        if not sanity:
+            print("No sanity-check results. Re-run with sanity_check=True.")
+            return
+
+        acs_lc = results["lc"]
+        bkg_fits = results.get("bkg_fits") or {}
+        panel_snr = sanity.get("panel_snr") or results.get("panel_snr") or {}
+        panels = sanity.get("panels") or list(acs_lc.keys())
+        best_panel = sanity.get("best_panel", results.get("best_panel"))
+        seed_panel = sanity.get("seed_panel", results.get("seed_panel"))
+        signal_range = sanity.get("t90_window")
+        if signal_range is None and results.get("signal_tstart") is not None:
+            signal_range = (results["signal_tstart"], results["signal_tstop"])
+        snr_bin_selection = (
+            sanity.get("snr_bin_selection")
+            or results.get("snr_bin_selection")
+        )
 
         fig, axes = plt.subplots(3, 2, figsize=(14, 10), sharex=True)
         axes = axes.flatten()
@@ -937,7 +1071,7 @@ class ACSDataAnalyzer:
         light_curve = {"t_min":t_min,"t_max":t_max,"panels":event_panels}
         
         # compute the TimeBins LC, time_start, time_stop, t90 and Li&Ma signfiicance
-        bblocks_analysis_results = self.analyze_lc_with_bblocks(light_curve, p0=p0, isRate=False, panels=panels)
+        bblocks_analysis_results = self.analyze_lc_with_bblocks(light_curve, p0=p0, isRate=False, panels=panels, sanity_check=sanity_check)
         
         acs_lc = bblocks_analysis_results['lc']
         event_time_start = bblocks_analysis_results['signal_tstart']
@@ -956,95 +1090,6 @@ class ACSDataAnalyzer:
         mjd_ref_timestamp = 1735689600.184
         event_time_start_unix = mjd_ref_timestamp + event_time_start
         
-        if sanity_check:
-            best_panel = bblocks_analysis_results["best_panel"]
-            seed_panel = bblocks_analysis_results["seed_panel"]
-            best_snr = bblocks_analysis_results["best_snr"]
-            panel_snr = bblocks_analysis_results["panel_snr"]
-            bkg_fits_dbg = bblocks_analysis_results["bkg_fits"]
-            snr_sel = bblocks_analysis_results.get("snr_bin_selection") or {}
-            sel = panel_snr.get(best_panel, {})
-
-            print("\n" + "=" * 80)
-            print("SANITY CHECK: panel selection")
-            print("=" * 80)
-            print(f"Seed panel (max rate, used for first T90): {seed_panel}")
-            print(f"Selected panel (max peak SNR):             {best_panel}")
-            print(f"Selection criterion: SNR = sqrt((d - b) / d) on the peak-rate bin")
-            print(
-                f"T90 window: [{t90_tstart:.6f}, {t90_tstop:.6f}] s "
-                f"(duration={t90_tstop - t90_tstart:.6f} s)"
-            )
-            print(
-                f"Selected peak bin: index={sel.get('ipeak', 'n/a')} | "
-                f"[{sel.get('t_lo', np.nan):.6f}, {sel.get('t_hi', np.nan):.6f}] s | "
-                f"center={sel.get('t_center', np.nan):.6f} s"
-            )
-            print(
-                f"Selected peak counts: d={sel.get('d', np.nan):.4f} | "
-                f"b={sel.get('b', np.nan):.4f} | "
-                f"SNR={best_snr:.4f}"
-            )
-            if best_panel != seed_panel:
-                print(
-                    f"Bayesian blocks were recomputed on {best_panel} "
-                    f"(different from seed {seed_panel})"
-                )
-            else:
-                print(f"Bayesian blocks kept on seed panel {seed_panel}")
-
-            selected_bins = np.asarray(snr_sel.get("indices_time", []), dtype=int)
-            print("-" * 80)
-            print("SNR bin selection on the best panel (guide for all panels)")
-            print(
-                f"Selected bins: {selected_bins.size} | "
-                f"greedy order={list(snr_sel.get('indices', []))} | "
-                f"time order={list(selected_bins)}"
-            )
-            print(
-                f"Cumulative optimal SNR={snr_sel.get('snr_optimal', np.nan):.4f} | "
-                f"d_sum={snr_sel.get('d_sum', np.nan):.3f} | "
-                f"b_sum={snr_sel.get('b_sum', np.nan):.3f}"
-            )
-            if selected_bins.size > 0:
-                lc_best = acs_lc[best_panel]
-                print(
-                    f"Time coverage of selected bins: "
-                    f"[{lc_best.lo_edges[selected_bins].min():.6f}, "
-                    f"{lc_best.hi_edges[selected_bins].max():.6f}] s"
-                )
-
-            print("-" * 80)
-            print(
-                f"{'panel':<8} {'sel':<5} {'ipeak':>7} {'t_center':>12} "
-                f"{'d':>10} {'b':>10} {'SNR':>8}"
-            )
-            for p in panels:
-                info = panel_snr.get(p, {})
-                mark = "<--" if p == best_panel else ""
-                b_val = info.get("b", np.nan)
-                print(
-                    f"{p:<8} {mark:<5} {info.get('ipeak', -1):>7d} "
-                    f"{info.get('t_center', np.nan):>12.4f} "
-                    f"{info.get('d', np.nan):>10.3f} "
-                    f"{b_val:>10.3f} "
-                    f"{info.get('snr', np.nan):>8.4f}"
-                )
-            print("=" * 80 + "\n")
-
-            self.plot_panel_snr_sanity_check(
-                acs_lc,
-                bkg_fits_dbg,
-                panel_snr,
-                panels,
-                best_panel,
-                seed_panel,
-                signal_range,
-                snr_bin_selection=bblocks_analysis_results.get("snr_bin_selection"),
-                save=save_plot,
-                prefix=prefix
-            )
-
         if plot:
             self.plot_lc(lc_sel,bb_lc,signal_range,save=save_plot,prefix=prefix)
 
@@ -1153,9 +1198,11 @@ class ACSDataAnalyzer:
         # obtain numpy arrays
         s_counts = np.array(s_counts)
         b_counts = np.array(b_counts)
-       
-        print("Signal counts per panel:", s_counts)
-        print("Background counts per panel:", b_counts)
-        
+
+        if sanity_check:
+            sanity = bblocks_analysis_results.get("sanity") or {}
+            sanity["s_counts"] = s_counts
+            sanity["b_counts"] = b_counts
+            bblocks_analysis_results["sanity"] = sanity
     
         return s_counts,b_counts,event_time_start_unix,bblocks_analysis_results
