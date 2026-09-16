@@ -941,6 +941,19 @@ class ACSDataAnalyzer:
             or results.get("snr_bin_selection")
         )
 
+        t0 = None
+        if best_panel in panel_snr and "t_center" in panel_snr[best_panel]:
+            t0 = float(panel_snr[best_panel]["t_center"])
+        elif sanity.get("selected_time_range"):
+            t_lo, t_hi = sanity["selected_time_range"]
+            t0 = 0.5 * (t_lo + t_hi)
+        elif signal_range is not None:
+            t0 = 0.5 * (signal_range[0] + signal_range[1])
+        else:
+            t0 = 0.0
+
+        zoom = 5.0
+
         fig, axes = plt.subplots(3, 2, figsize=(14, 10), sharex=True)
         axes = axes.flatten()
 
@@ -949,9 +962,10 @@ class ACSDataAnalyzer:
             info = panel_snr.get(panel, {})
             res = bkg_fits.get(panel)
             selected = panel == best_panel
+            t = lc.centroids - t0
 
             ax.step(
-                lc.centroids,
+                t,
                 lc.rates,
                 where="mid",
                 color="#1f77b4",
@@ -960,7 +974,7 @@ class ACSDataAnalyzer:
 
             if res is not None:
                 ax.plot(
-                    lc.centroids,
+                    t,
                     res["bkg_rate"],
                     color="red",
                     label="Fitted background"
@@ -968,8 +982,8 @@ class ACSDataAnalyzer:
 
             if signal_range is not None:
                 ax.axvspan(
-                    signal_range[0],
-                    signal_range[1],
+                    signal_range[0] - t0,
+                    signal_range[1] - t0,
                     color="olive",
                     alpha=0.12,
                     label="T90 window"
@@ -979,8 +993,8 @@ class ACSDataAnalyzer:
                 selected_bins = snr_bin_selection.get("indices_time", [])
                 for k, i in enumerate(selected_bins):
                     ax.axvspan(
-                        lc.lo_edges[i],
-                        lc.hi_edges[i],
+                        lc.lo_edges[i] - t0,
+                        lc.hi_edges[i] - t0,
                         color="green",
                         alpha=0.28,
                         label="SNR-selected bins" if k == 0 else None
@@ -988,14 +1002,14 @@ class ACSDataAnalyzer:
 
             if "t_lo" in info:
                 ax.axvspan(
-                    info["t_lo"],
-                    info["t_hi"],
+                    info["t_lo"] - t0,
+                    info["t_hi"] - t0,
                     color="orange",
                     alpha=0.45,
                     label="Peak bin"
                 )
                 ax.plot(
-                    info["t_center"],
+                    info["t_center"] - t0,
                     info["rate_peak"],
                     "o",
                     color="orange",
@@ -1012,13 +1026,20 @@ class ACSDataAnalyzer:
                     spine.set_color("darkorange")
                     spine.set_linewidth(2.5)
 
+            in_view = (t >= -zoom) & (t <= zoom)
+            if np.any(in_view):
+                y_max = np.nanmax(lc.rates[in_view])
+                if np.isfinite(y_max) and y_max > 0:
+                    ax.set_ylim(0, 1.15 * y_max)
+
+            ax.set_xlim(-zoom, zoom)
             ax.set_title(title)
             ax.set_ylabel("Counts / s")
             ax.grid(True, alpha=0.3)
             ax.legend(loc="upper right", fontsize=8)
 
-        axes[-1].set_xlabel("Time [s]")
-        axes[-2].set_xlabel("Time [s]")
+        axes[-1].set_xlabel("Time - peak [s]")
+        axes[-2].set_xlabel("Time - peak [s]")
         fig.suptitle(
             f"Panel SNR sanity check | selected={best_panel} | seed={seed_panel}",
             fontsize=13
