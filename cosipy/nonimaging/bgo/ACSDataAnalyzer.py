@@ -306,7 +306,7 @@ class ACSDataAnalyzer:
         # BACKGROUND FITS + BEST PANEL
         # =========================
         # One polynomial fit per panel, excluding T90 ± buffer.
-        # SNR = sqrt((d - b) / d) on the peak bin, with b from the fitted background.
+        # SNR = (d - b) / sqrt(b) on the peak bin, with b from the fitted background.
         bkg_fits = {}
         panel_snr = {}
         best_panel = None
@@ -332,8 +332,7 @@ class ACSDataAnalyzer:
             else:
                 bkg_fits[panel] = res
                 b = float(res["bkg_counts"][ipeak])
-                if d > 0 and d > b:
-                    snr = np.sqrt((d - b) / d)
+                snr = self.counts_snr(d, b)
 
             panel_snr[panel] = {
                 "snr": snr,
@@ -448,7 +447,7 @@ class ACSDataAnalyzer:
                 "best_snr": best_snr,
                 "seed_panel": seed_panel,
                 "bb_recomputed": best_panel != seed_panel,
-                "selection_criterion": "SNR = sqrt((d - b) / d) on the peak-rate bin",
+                "selection_criterion": "SNR = (d - b) / sqrt(b) on the peak-rate bin",
                 "t90_window": (float(t90_tstart), float(t90_tstop)),
                 "peak_bin": panel_snr.get(best_panel, {}),
                 "panel_snr": panel_snr,
@@ -483,11 +482,27 @@ class ACSDataAnalyzer:
             "t_max": t_max
         }
     
+    @staticmethod
+    def counts_snr(d, b):
+        """
+        Poisson SNR for observed counts d and fitted background b.
+
+        SNR = (d - b) / sqrt(b)
+        """
+        d_arr = np.atleast_1d(np.asarray(d, dtype=float))
+        b_arr = np.atleast_1d(np.asarray(b, dtype=float))
+        snr = np.zeros(d_arr.shape, dtype=float)
+        ok = b_arr > 0
+        snr[ok] = (d_arr[ok] - b_arr[ok]) / np.sqrt(b_arr[ok])
+        if np.ndim(d) == 0:
+            return float(snr[0])
+        return snr
+
     def select_optimal_snr_bins(self, counts, bkg_counts):
         """
         Select the bin set that maximises cumulative SNR on one light curve.
 
-        1. Compute per-bin SNR = sqrt((d - b) / d)
+        1. Compute per-bin SNR = (d - b) / sqrt(b)
         2. Sort bins by decreasing per-bin SNR
         3. Add bins in that order, accumulating observed and fitted background counts
         4. Stop when the cumulative SNR decreases
@@ -514,10 +529,8 @@ class ACSDataAnalyzer:
         counts = np.asarray(counts, dtype=float)
         bkg_counts = np.asarray(bkg_counts, dtype=float)
 
+        bin_snr = self.counts_snr(counts, bkg_counts)
         n = counts.size
-        bin_snr = np.zeros(n, dtype=float)
-        valid = (counts > 0) & (counts > bkg_counts)
-        bin_snr[valid] = np.sqrt((counts[valid] - bkg_counts[valid]) / counts[valid])
 
         order = np.argsort(-bin_snr)
         order = order[bin_snr[order] > 0]
@@ -531,10 +544,7 @@ class ACSDataAnalyzer:
         for i in order:
             d_new = d_sum + counts[i]
             b_new = b_sum + bkg_counts[i]
-            if d_new > 0 and d_new > b_new:
-                snr_new = np.sqrt((d_new - b_new) / d_new)
-            else:
-                snr_new = 0.0
+            snr_new = self.counts_snr(d_new, b_new)
 
             if snr_new < snr_cum:
                 break
@@ -550,10 +560,7 @@ class ACSDataAnalyzer:
             selected = [ipeak]
             d_sum = float(counts[ipeak])
             b_sum = float(bkg_counts[ipeak])
-            if d_sum > 0 and d_sum > b_sum:
-                snr_cum = np.sqrt((d_sum - b_sum) / d_sum)
-            else:
-                snr_cum = 0.0
+            snr_cum = self.counts_snr(d_sum, b_sum)
             snr_history = [snr_cum]
 
         selected = np.asarray(selected, dtype=int)
