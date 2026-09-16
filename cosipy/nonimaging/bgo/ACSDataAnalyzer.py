@@ -162,7 +162,7 @@ class ACSDataAnalyzer:
         
         return t_min,t_max,panels
     
-    def analyze_lc_with_bblocks(self,lightcurve, p0=0.05, isRate=False,panels=['z1', 'z0', 'x1', 'x0', 'y1', 'y0']):
+    def analyze_lc_with_bblocks(self,lightcurve, p0=0.05, isRate=False,panels=['z1', 'z0', 'x1', 'x0', 'y1', 'y0'], bkg_buffer=1.0, bkg_order=2):
         """
         Analyze the light curve data.
 
@@ -184,6 +184,8 @@ class ACSDataAnalyzer:
             - p0: false alarm probability for Bayesian Blocks
             - isRate: if True, input contains rates → converted to counts
             - panels: internal panel names to analyze (x,y,z convention)
+            - bkg_buffer: extra time excluded around the T90 window in the background fit
+            - bkg_order: polynomial order of the background fit
 
         Output:
             dictionary containing:
@@ -191,6 +193,12 @@ class ACSDataAnalyzer:
                     "lc_sel": selected lightcurve,
                     "bb_lc": BayesianBlocksLightcurve object,
                     "lc": dictionary of all lightcurves,
+                    "best_panel": panel with the highest peak SNR,
+                    "best_snr": peak SNR of the selected panel,
+                    "seed_panel": panel used to get the first T90 window,
+                    "bkg_fits": polynomial background fits reused later,
+                    "panel_snr": per-panel peak SNR diagnostics,
+                    "snr_bin_selection": greedy high-SNR bin set from the best panel,
                     "signal_tstart": signal start time,
                     "signal_tstop": signal stop time,
                     "t90": T90 duration,
@@ -248,40 +256,23 @@ class ACSDataAnalyzer:
             )
 
         # =========================
-        # BEST PANEL SELECTION
+        # BAYESIAN BLOCKS (SEED PANEL)
         # =========================
-        best_panel = None
-        best_value = float('-inf')
+        # A T90 window is needed to fit background without including the burst.
+        # Use the highest-rate panel only as a seed; the final panel is chosen by SNR.
+        def _compute_bb(panel_lc):
+            bb = BayesianBlocksLightcurve(panel_lc)
+            bb.compute_bayesian_blocks(p0=p0)
+            t90_val = bb.duration(quantile=.9)
+            t90_err = bb.duration_error(.9, nsamples=100)
+            tstart, tstop = bb.quantile_range(quantile=.9)
+            return bb, t90_val, t90_err, tstart, tstop
 
-        for panel in panels:
-            value = np.max(lc[panel].rates)
+        seed_panel = max(panels, key=lambda p: np.max(lc[p].rates))
+        lc_sel = lc[seed_panel]
 
-            if value > best_value:
-                best_value = value
-                best_panel = panel
-
-        #print(best_panel)
-        lc_sel = lc[best_panel]
-        
-        #print(lc_sel)
-
-        # =========================
-        # BAYESIAN BLOCKS
-        # =========================
         try:
-            
-            bb_lc = BayesianBlocksLightcurve(lc_sel)
-            #self.plot_lc(lc_sel,bb_lc,None, save=False,prefix="")
-            
-            
-            bb_lc.compute_bayesian_blocks(p0=p0)#p0=p0,max_iter=1
-            
-            signal_range = bb_lc.signal_range
-            t90 = bb_lc.duration(quantile=.9)
-            t90_error = bb_lc.duration_error(.9, nsamples=100)
-            t90_tstart,t90_tstop = bb_lc.quantile_range(quantile=.9)
-           
-
+            bb_lc, t90, t90_error, t90_tstart, t90_tstop = _compute_bb(lc_sel)
         except Exception as e:
             print(e)
             print("WARNING")
@@ -289,6 +280,12 @@ class ACSDataAnalyzer:
                 "lc_sel": lc_sel,
                 "bb_lc": None,
                 "lc": None,
+                "best_panel": seed_panel,
+                "best_snr": -9999,
+                "seed_panel": seed_panel,
+                "bkg_fits": {},
+                "panel_snr": {},
+                "snr_bin_selection": None,
                 "signal_tstart": -9999,
                 "signal_tstop": -9999,
                 "t90": -9999,
@@ -299,6 +296,86 @@ class ACSDataAnalyzer:
                 "t_min": None,
                 "t_max": None
             }
+
+        signal_range = (t90_tstart, t90_tstop)
+
+        # =========================
+        # BACKGROUND FITS + BEST PANEL
+        # =========================
+        # One polynomial fit per panel, excluding T90 ± buffer.
+        # SNR = sqrt((d - b) / d) on the peak bin, with b from the fitted background.
+        bkg_fits = {}
+        panel_snr = {}
+        best_panel = None
+        best_snr = float("-inf")
+
+        for panel in panels:
+            panel_lc = lc[panel]
+            ipeak = int(np.argmax(panel_lc.rates))
+            d = float(panel_lc.counts[ipeak])
+            b = np.nan
+            snr = 0.0
+
+            try:
+                res = self.fit_background(
+                    panel_lc,
+                    signal_range,
+                    buffer=bkg_buffer,
+                    order=bkg_order
+                )
+            except RuntimeError as e:
+                print(e)
+                bkg_fits[panel] = None
+            else:
+                bkg_fits[panel] = res
+                b = float(res["bkg_counts"][ipeak])
+                if d > 0 and d > b:
+                    snr = np.sqrt((d - b) / d)
+
+            panel_snr[panel] = {
+                "snr": snr,
+                "ipeak": ipeak,
+                "d": d,
+                "b": b,
+                "t_lo": float(panel_lc.lo_edges[ipeak]),
+                "t_hi": float(panel_lc.hi_edges[ipeak]),
+                "t_center": float(panel_lc.centroids[ipeak]),
+                "rate_peak": float(panel_lc.rates[ipeak]),
+            }
+
+            if snr > best_snr:
+                best_snr = snr
+                best_panel = panel
+
+        if best_panel != seed_panel:
+            try:
+                bb_new, t90_new, t90_err_new, tstart_new, tstop_new = _compute_bb(lc[best_panel])
+            except Exception as e:
+                print(e)
+                print("WARNING: Bayesian blocks failed on highest-SNR panel, keeping seed panel")
+                best_panel = seed_panel
+            else:
+                bb_lc = bb_new
+                t90 = t90_new
+                t90_error = t90_err_new
+                t90_tstart = tstart_new
+                t90_tstop = tstop_new
+
+        lc_sel = lc[best_panel]
+
+        # =========================
+        # GREEDY HIGH-SNR BIN SET
+        # =========================
+        # Rank bins on the best panel by per-bin SNR, then add them in that
+        # order while the cumulative SNR increases. The resulting bin indices
+        # are reused for every panel.
+        snr_bin_selection = None
+        best_fit = bkg_fits.get(best_panel)
+        if best_fit is not None:
+            snr_bin_selection = self.select_optimal_snr_bins(
+                lc_sel.counts,
+                best_fit["bkg_counts"],
+            )
 
         # =========================
         # SIGNAL + BACKGROUND
@@ -359,6 +436,12 @@ class ACSDataAnalyzer:
             "lc_sel": lc_sel,
             "bb_lc": bb_lc,
             "lc": lc,
+            "best_panel": best_panel,
+            "best_snr": best_snr,
+            "seed_panel": seed_panel,
+            "bkg_fits": bkg_fits,
+            "panel_snr": panel_snr,
+            "snr_bin_selection": snr_bin_selection,
             "signal_tstart":t90_tstart,
             "signal_tstop": t90_tstop,
             "t90": t90,
@@ -370,6 +453,92 @@ class ACSDataAnalyzer:
             "t_max": t_max
         }
     
+    def select_optimal_snr_bins(self, counts, bkg_counts):
+        """
+        Select the bin set that maximises cumulative SNR on one light curve.
+
+        1. Compute per-bin SNR = sqrt((d - b) / d)
+        2. Sort bins by decreasing per-bin SNR
+        3. Add bins in that order, accumulating observed and fitted background counts
+        4. Stop when the cumulative SNR decreases
+
+        Parameters
+        ----------
+        counts : array
+            Observed counts per bin.
+        bkg_counts : array
+            Fitted background counts per bin.
+
+        Returns
+        -------
+        result : dict
+            - "indices": selected bin indices in greedy order
+            - "indices_time": selected bin indices sorted in time
+            - "order": all positive-SNR bins sorted by decreasing per-bin SNR
+            - "bin_snr": per-bin SNR for the full light curve
+            - "snr_cumulative": cumulative SNR after each added bin
+            - "snr_optimal": cumulative SNR of the selected set
+            - "d_sum", "b_sum": accumulated observed and background counts
+        """
+
+        counts = np.asarray(counts, dtype=float)
+        bkg_counts = np.asarray(bkg_counts, dtype=float)
+
+        n = counts.size
+        bin_snr = np.zeros(n, dtype=float)
+        valid = (counts > 0) & (counts > bkg_counts)
+        bin_snr[valid] = np.sqrt((counts[valid] - bkg_counts[valid]) / counts[valid])
+
+        order = np.argsort(-bin_snr)
+        order = order[bin_snr[order] > 0]
+
+        selected = []
+        d_sum = 0.0
+        b_sum = 0.0
+        snr_cum = -np.inf
+        snr_history = []
+
+        for i in order:
+            d_new = d_sum + counts[i]
+            b_new = b_sum + bkg_counts[i]
+            if d_new > 0 and d_new > b_new:
+                snr_new = np.sqrt((d_new - b_new) / d_new)
+            else:
+                snr_new = 0.0
+
+            if snr_new < snr_cum:
+                break
+
+            selected.append(int(i))
+            d_sum = d_new
+            b_sum = b_new
+            snr_cum = snr_new
+            snr_history.append(snr_new)
+
+        if not selected and n > 0:
+            ipeak = int(np.argmax(counts))
+            selected = [ipeak]
+            d_sum = float(counts[ipeak])
+            b_sum = float(bkg_counts[ipeak])
+            if d_sum > 0 and d_sum > b_sum:
+                snr_cum = np.sqrt((d_sum - b_sum) / d_sum)
+            else:
+                snr_cum = 0.0
+            snr_history = [snr_cum]
+
+        selected = np.asarray(selected, dtype=int)
+
+        return {
+            "indices": selected,
+            "indices_time": np.sort(selected),
+            "order": order,
+            "bin_snr": bin_snr,
+            "snr_cumulative": np.asarray(snr_history, dtype=float),
+            "snr_optimal": float(snr_cum if selected.size else 0.0),
+            "d_sum": float(d_sum),
+            "b_sum": float(b_sum),
+        }
+
     def fit_background(self,lc, signal_range, buffer=0.0, order=2):
         
         """
@@ -552,7 +721,8 @@ class ACSDataAnalyzer:
         background_counts,
         panel_name,
         save=False,
-        prefix=""
+        prefix="",
+        selected_indices=None
     ):
         """
         Plot observed and background light curves.
@@ -575,13 +745,23 @@ class ACSDataAnalyzer:
             color="red"
         )
 
-        plt.axvspan(
-            signal_range[0],
-            signal_range[1],
-            alpha=0.2,
-            label="Signal window",
-            color="#1f77b4"
-        )
+        if selected_indices is not None and len(selected_indices) > 0:
+            for k, i in enumerate(selected_indices):
+                plt.axvspan(
+                    lc.lo_edges[i],
+                    lc.hi_edges[i],
+                    alpha=0.25,
+                    color="#1f77b4",
+                    label="SNR-selected bins" if k == 0 else None
+                )
+        elif signal_range is not None:
+            plt.axvspan(
+                signal_range[0],
+                signal_range[1],
+                alpha=0.2,
+                label="Signal window",
+                color="#1f77b4"
+            )
 
         plt.xlabel("Time")
         plt.ylabel("Counts / bin")
@@ -603,7 +783,154 @@ class ACSDataAnalyzer:
         else:
             plt.show()
 
-    def extract_source_data_from_fits(self,fits_path,plot=False,save_plot=False,prefix="",panels = ['z1','z0','x1','x0','y1','y0'],p0=0.05):
+    def plot_panel_snr_sanity_check(
+        self,
+        acs_lc,
+        bkg_fits,
+        panel_snr,
+        panels,
+        best_panel,
+        seed_panel,
+        signal_range,
+        snr_bin_selection=None,
+        save=False,
+        prefix=""
+    ):
+        """
+        Plot all ACS panels with peak-bin and T90 markers used for SNR selection.
+        """
+
+        fig, axes = plt.subplots(3, 2, figsize=(14, 10), sharex=True)
+        axes = axes.flatten()
+
+        for ax, panel in zip(axes, panels):
+            lc = acs_lc[panel]
+            info = panel_snr.get(panel, {})
+            res = bkg_fits.get(panel)
+            selected = panel == best_panel
+
+            ax.step(
+                lc.centroids,
+                lc.rates,
+                where="mid",
+                color="#1f77b4",
+                label="Observed rate"
+            )
+
+            if res is not None:
+                ax.plot(
+                    lc.centroids,
+                    res["bkg_rate"],
+                    color="red",
+                    label="Fitted background"
+                )
+
+            if signal_range is not None:
+                ax.axvspan(
+                    signal_range[0],
+                    signal_range[1],
+                    color="olive",
+                    alpha=0.12,
+                    label="T90 window"
+                )
+
+            if snr_bin_selection is not None:
+                selected_bins = snr_bin_selection.get("indices_time", [])
+                for k, i in enumerate(selected_bins):
+                    ax.axvspan(
+                        lc.lo_edges[i],
+                        lc.hi_edges[i],
+                        color="green",
+                        alpha=0.28,
+                        label="SNR-selected bins" if k == 0 else None
+                    )
+
+            if "t_lo" in info:
+                ax.axvspan(
+                    info["t_lo"],
+                    info["t_hi"],
+                    color="orange",
+                    alpha=0.45,
+                    label="Peak bin"
+                )
+                ax.plot(
+                    info["t_center"],
+                    info["rate_peak"],
+                    "o",
+                    color="orange",
+                    markersize=7,
+                    zorder=5
+                )
+
+            snr = info.get("snr", np.nan)
+            ipeak = info.get("ipeak", -1)
+            title = f"{panel} | SNR={snr:.3f} | peak bin={ipeak}"
+            if selected:
+                title = f"SELECTED  {title}"
+                for spine in ax.spines.values():
+                    spine.set_color("darkorange")
+                    spine.set_linewidth(2.5)
+
+            ax.set_title(title)
+            ax.set_ylabel("Counts / s")
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc="upper right", fontsize=8)
+
+        axes[-1].set_xlabel("Time [s]")
+        axes[-2].set_xlabel("Time [s]")
+        fig.suptitle(
+            f"Panel SNR sanity check | selected={best_panel} | seed={seed_panel}",
+            fontsize=13
+        )
+        plt.tight_layout()
+
+        if save:
+            filename = f"{prefix}_panel_snr_sanity_check.png"
+            plt.savefig(self.output_dir + "/" + filename, dpi=300, bbox_inches="tight")
+            plt.close(fig)
+            print(f"Saved: {filename}")
+        else:
+            plt.show()
+
+        if snr_bin_selection is not None:
+            hist = snr_bin_selection.get("snr_cumulative", np.array([]))
+            if hist.size > 0:
+                fig2, ax2 = plt.subplots(figsize=(8, 4))
+                ax2.plot(
+                    np.arange(1, hist.size + 1),
+                    hist,
+                    marker="o",
+                    color="#1f77b4"
+                )
+                ax2.axhline(
+                    snr_bin_selection["snr_optimal"],
+                    color="green",
+                    ls="--",
+                    label=f"Optimal SNR={snr_bin_selection['snr_optimal']:.4f}"
+                )
+                ax2.set_xlabel("Bins added (decreasing per-bin SNR)")
+                ax2.set_ylabel("Cumulative SNR")
+                ax2.set_title(
+                    f"Greedy SNR selection on {best_panel} "
+                    f"({hist.size} bins)"
+                )
+                ax2.grid(True, alpha=0.3)
+                ax2.legend()
+                fig2.tight_layout()
+
+                if save:
+                    filename = f"{prefix}_snr_cumulative_sanity_check.png"
+                    plt.savefig(
+                        self.output_dir + "/" + filename,
+                        dpi=300,
+                        bbox_inches="tight"
+                    )
+                    plt.close(fig2)
+                    print(f"Saved: {filename}")
+                else:
+                    plt.show()
+
+    def extract_source_data_from_fits(self,fits_path,plot=False,save_plot=False,prefix="",panels = ['z1','z0','x1','x0','y1','y0'],p0=0.05,sanity_check=False):
         
         t_min,t_max,event_panels = self.open_fits_file(fits_path)
         
@@ -629,6 +956,95 @@ class ACSDataAnalyzer:
         mjd_ref_timestamp = 1735689600.184
         event_time_start_unix = mjd_ref_timestamp + event_time_start
         
+        if sanity_check:
+            best_panel = bblocks_analysis_results["best_panel"]
+            seed_panel = bblocks_analysis_results["seed_panel"]
+            best_snr = bblocks_analysis_results["best_snr"]
+            panel_snr = bblocks_analysis_results["panel_snr"]
+            bkg_fits_dbg = bblocks_analysis_results["bkg_fits"]
+            snr_sel = bblocks_analysis_results.get("snr_bin_selection") or {}
+            sel = panel_snr.get(best_panel, {})
+
+            print("\n" + "=" * 80)
+            print("SANITY CHECK: panel selection")
+            print("=" * 80)
+            print(f"Seed panel (max rate, used for first T90): {seed_panel}")
+            print(f"Selected panel (max peak SNR):             {best_panel}")
+            print(f"Selection criterion: SNR = sqrt((d - b) / d) on the peak-rate bin")
+            print(
+                f"T90 window: [{t90_tstart:.6f}, {t90_tstop:.6f}] s "
+                f"(duration={t90_tstop - t90_tstart:.6f} s)"
+            )
+            print(
+                f"Selected peak bin: index={sel.get('ipeak', 'n/a')} | "
+                f"[{sel.get('t_lo', np.nan):.6f}, {sel.get('t_hi', np.nan):.6f}] s | "
+                f"center={sel.get('t_center', np.nan):.6f} s"
+            )
+            print(
+                f"Selected peak counts: d={sel.get('d', np.nan):.4f} | "
+                f"b={sel.get('b', np.nan):.4f} | "
+                f"SNR={best_snr:.4f}"
+            )
+            if best_panel != seed_panel:
+                print(
+                    f"Bayesian blocks were recomputed on {best_panel} "
+                    f"(different from seed {seed_panel})"
+                )
+            else:
+                print(f"Bayesian blocks kept on seed panel {seed_panel}")
+
+            selected_bins = np.asarray(snr_sel.get("indices_time", []), dtype=int)
+            print("-" * 80)
+            print("SNR bin selection on the best panel (guide for all panels)")
+            print(
+                f"Selected bins: {selected_bins.size} | "
+                f"greedy order={list(snr_sel.get('indices', []))} | "
+                f"time order={list(selected_bins)}"
+            )
+            print(
+                f"Cumulative optimal SNR={snr_sel.get('snr_optimal', np.nan):.4f} | "
+                f"d_sum={snr_sel.get('d_sum', np.nan):.3f} | "
+                f"b_sum={snr_sel.get('b_sum', np.nan):.3f}"
+            )
+            if selected_bins.size > 0:
+                lc_best = acs_lc[best_panel]
+                print(
+                    f"Time coverage of selected bins: "
+                    f"[{lc_best.lo_edges[selected_bins].min():.6f}, "
+                    f"{lc_best.hi_edges[selected_bins].max():.6f}] s"
+                )
+
+            print("-" * 80)
+            print(
+                f"{'panel':<8} {'sel':<5} {'ipeak':>7} {'t_center':>12} "
+                f"{'d':>10} {'b':>10} {'SNR':>8}"
+            )
+            for p in panels:
+                info = panel_snr.get(p, {})
+                mark = "<--" if p == best_panel else ""
+                b_val = info.get("b", np.nan)
+                print(
+                    f"{p:<8} {mark:<5} {info.get('ipeak', -1):>7d} "
+                    f"{info.get('t_center', np.nan):>12.4f} "
+                    f"{info.get('d', np.nan):>10.3f} "
+                    f"{b_val:>10.3f} "
+                    f"{info.get('snr', np.nan):>8.4f}"
+                )
+            print("=" * 80 + "\n")
+
+            self.plot_panel_snr_sanity_check(
+                acs_lc,
+                bkg_fits_dbg,
+                panel_snr,
+                panels,
+                best_panel,
+                seed_panel,
+                signal_range,
+                snr_bin_selection=bblocks_analysis_results.get("snr_bin_selection"),
+                save=save_plot,
+                prefix=prefix
+            )
+
         if plot:
             self.plot_lc(lc_sel,bb_lc,signal_range,save=save_plot,prefix=prefix)
 
@@ -640,23 +1056,33 @@ class ACSDataAnalyzer:
         tstart = t90_tstart
         tstop = t90_tstop
         duration = tstop-tstart
+        bkg_fits = bblocks_analysis_results["bkg_fits"]
+        snr_sel = bblocks_analysis_results.get("snr_bin_selection") or {}
+        selected_indices = np.asarray(snr_sel.get("indices_time", []), dtype=int)
+
         for p in panels:
         
             lc = acs_lc[p]
-            res = self.fit_background(lc, signal_range, buffer=1.0, order=2)
+            res = bkg_fits.get(p)
+            if res is None:
+                res = self.fit_background(lc, signal_range, buffer=1.0, order=2)
 
             results.append(res)
             
-            # maschera della finestra del segnale
             # --------------------------------------------------
             # SAME BINS FOR SOURCE AND BACKGROUND
+            # High-SNR bins chosen on the best panel, applied to every panel.
             # --------------------------------------------------
-            mask_sig = (
-                (lc.hi_edges > tstart) &
-                (lc.lo_edges < tstop)
-            )
+            if selected_indices.size > 0:
+                mask_sig = np.zeros(lc.counts.size, dtype=bool)
+                mask_sig[selected_indices] = True
+            else:
+                mask_sig = (
+                    (lc.hi_edges > tstart) &
+                    (lc.lo_edges < tstop)
+                )
 
-            selected_indices = np.where(mask_sig)[0]
+            bin_indices = np.where(mask_sig)[0]
 
             # print("\n" + "=" * 80)
             # print(f"PANEL: {p}")
@@ -665,7 +1091,7 @@ class ACSDataAnalyzer:
             # print(f"Number of selected bins: {len(selected_indices)}")
             # print("-" * 80)
 
-            for i in selected_indices:
+            for i in bin_indices:
 
                 lo = lc.lo_edges[i]
                 hi = lc.hi_edges[i]
@@ -711,7 +1137,17 @@ class ACSDataAnalyzer:
             b_counts.append(background_counts)
             
             if plot:
-                self.plot_background(lc,res,signal_range,signal_counts,background_counts,p,save=save_plot,prefix=prefix)
+                self.plot_background(
+                    lc,
+                    res,
+                    signal_range,
+                    signal_counts,
+                    background_counts,
+                    p,
+                    save=save_plot,
+                    prefix=prefix,
+                    selected_indices=bin_indices
+                )
                
                 
         # obtain numpy arrays
