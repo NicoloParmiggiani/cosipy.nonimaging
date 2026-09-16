@@ -274,7 +274,7 @@ class ACSDataAnalyzer:
             #self.plot_lc(lc_sel,bb_lc,None, save=False,prefix="")
             
             
-            bb_lc.compute_bayesian_blocks()#p0=p0,max_iter=1
+            bb_lc.compute_bayesian_blocks(p0=p0)#p0=p0,max_iter=1
             
             signal_range = bb_lc.signal_range
             t90 = bb_lc.duration(quantile=.9)
