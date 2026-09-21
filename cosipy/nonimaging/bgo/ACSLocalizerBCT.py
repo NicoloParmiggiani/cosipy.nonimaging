@@ -63,8 +63,10 @@ class ACSLocalizerBCT:
         b_counts : list or np.ndarray
             Background counts.
         attitude : Attitude or None
-            Spacecraft attitude. If provided, output is in Galactic (l, b).
-            If None, output is in instrument coordinates (theta, phi).
+            Spacecraft attitude. If provided, `l`/`b` are Galactic and
+            `theta_out`/`phi_out` are converted back to spacecraft
+            coordinates. If None, `theta_out`/`phi_out` are already
+            spacecraft coordinates.
         conf_level : float, optional
             Confidence level for error region (default = 0.9).
 
@@ -154,13 +156,15 @@ class ACSLocalizerBCT:
             b_out = -1.0
 
             if attitude is None:
+                # Identity attitude: ICRS is aligned with the spacecraft frame.
                 phi_out = float(best.spherical.lon.deg)
                 theta_out = float(90.0 - best.spherical.lat.deg)
             else:
                 l_out = float(best.l.deg)
                 b_out = float(best.b.deg)
-                phi_out = float(best.l.deg)
-                theta_out = float(90.0 - best.b.deg)
+                best_sc = best.transform_to(SpacecraftFrame(attitude=attitude))
+                phi_out = float(best_sc.spherical.lon.deg)
+                theta_out = float(90.0 - best_sc.spherical.lat.deg)
 
             results.append({
                 "theta_out": theta_out,
@@ -183,14 +187,22 @@ class ACSLocalizerBCT:
         print(f"Medium Look-up tables: {self.luts['medium'].labels}")
         print(f"Hard Look-up tables: {self.luts['hard'].labels}")
 
-    def plot_loc_table(self,panel_name):
-        
-        sky_loctable = self.luts['soft']
-        sky_loctable.get_expectation_map(panel_name).plot()
-        sky_loctable = self.luts['medium']
-        sky_loctable.get_expectation_map(panel_name).plot()
-        sky_loctable = self.luts['hard']
-        sky_loctable.get_expectation_map(panel_name).plot()
+    def plot_loc_table(self, panel_name):
+        """
+        Plot expected counts for one panel from the soft/medium/hard sky LUTs.
+
+        Call ``localize()`` first: this method uses ``self.luts``, which is
+        created there from the attitude of that call.
+        """
+
+        if not hasattr(self, "luts") or self.luts is None:
+            raise RuntimeError("Call localize() before plot_loc_table().")
+
+        for label in ("soft", "medium", "hard"):
+            sky_loctable = self.luts[label]
+            sky_loctable.get_expectation_map(panel_name).plot()
+            plt.title(f"{label} | {panel_name}")
+            plt.show()
 
 
     def localize_old(self, s_counts, b_counts, attitude=None, conf_level=0.9,duration=1):

@@ -364,6 +364,22 @@ class ACSDataAnalyzer:
                 t90_tstop = tstop_new
 
         lc_sel = lc[best_panel]
+        signal_range = (t90_tstart, t90_tstop)
+
+        # Refit background on the final T90. The first fits used the seed-panel
+        # T90 only to rank panels; counts and greedy bins must exclude the
+        # burst window of the selected panel.
+        for panel in panels:
+            try:
+                bkg_fits[panel] = self.fit_background(
+                    lc[panel],
+                    signal_range,
+                    buffer=bkg_buffer,
+                    order=bkg_order
+                )
+            except RuntimeError as e:
+                print(e)
+                bkg_fits[panel] = None
 
         # =========================
         # GREEDY HIGH-SNR BIN SET
