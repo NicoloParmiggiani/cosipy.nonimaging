@@ -140,9 +140,15 @@ class ACSLocalizerBCT:
             lut.set_background(b_counts)
             lut.set_data(s_counts)
 
-            ts_map = TSMap(nside=self.nside, coordsys=coordsys)
+
             likelihood = NormLocLike(lut)
+            ts_map = TSMap(nside=self.nside, coordsys=coordsys)
             ts_map.compute(likelihood)
+            
+            sky_map = SkyMap(nside=self.nside, coordsys=coordsys)
+            sky_map.compute(norm_likelihood)
+            
+            print(sky_map)
 
             ts_value = float(np.max(ts_map))
             best = ts_map.best_loc()
@@ -173,6 +179,7 @@ class ACSLocalizerBCT:
                 "b": b_out,
                 "label": label,
                 "ts_map": ts_map,
+                "sky_map": sky_map,
                 "ts_value": ts_value,
                 "sqrt_ts": float(np.sqrt(ts_value)),
                 "cont_area_deg2": float(cont_area.value),
