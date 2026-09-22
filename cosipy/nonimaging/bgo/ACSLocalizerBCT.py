@@ -146,7 +146,7 @@ class ACSLocalizerBCT:
             ts_map.compute(likelihood)
             
             sky_map = SkyMap(nside=self.nside, coordsys=coordsys)
-            sky_map.compute(norm_likelihood)
+            sky_map.compute(likelihood)
             
             print(sky_map)
 
