@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import astropy.units as u
 from astropy.coordinates import SkyCoord, Galactic, ICRS
-from bctools.loc import TSMap, NormLocLike
+from bctools.loc import TSMap, SkyMap, NormLocLike
 from scoords import Attitude, SpacecraftFrame
 
 
