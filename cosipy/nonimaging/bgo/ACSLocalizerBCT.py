@@ -5,6 +5,7 @@ import healpy as hp
 import astropy.units as u
 from astropy.coordinates import SkyCoord, Galactic, ICRS
 from scipy.stats import binom, norm
+from mhealpy import HealpixMap
 from bctools.loc import TSMap, SkyMap, NormLocLike
 from scoords import Attitude, SpacecraftFrame
 
@@ -461,8 +462,12 @@ class ACSLocalizerBCT:
         title=None,
     ):
         """
-        Plot a probability HEALPix array with the containment contour
-        and the true / reconstructed locations.
+        Plot the X% containment pixels of a probability HEALPix array.
+
+        ``SkyMap.plot`` draws a cumulative-probability alpha overlay, not
+        a sharp error region. Here pixels are ranked by probability and
+        kept until their sum reaches ``conf_level`` (same definition as
+        ``smooth_skymap_area``). Only those pixels are plotted.
 
         Parameters
         ----------
@@ -474,7 +479,7 @@ class ACSLocalizerBCT:
         loc_l, loc_b : float
             Reconstructed Galactic coordinates in degrees.
         conf_level : float
-            Containment fraction drawn by ``SkyMap.plot`` (default 0.9).
+            Containment fraction, default 0.9.
         coordsys : str
             Coordinate system of the map, default ``galactic``.
         show : bool
@@ -482,18 +487,31 @@ class ACSLocalizerBCT:
         save_path : str or None
             Optional PNG path.
         title : str or None
-            Optional axes title.
+            Optional axes title. Defaults to the containment area.
 
         Returns
         -------
         tuple or None
             ``(img, ax)`` when ``show=False``, otherwise None.
         """
-        values = np.asarray(values, dtype=float)
-        sky_map = SkyMap(nside=hp.get_nside(values), coordsys=coordsys)
-        sky_map[:] = values
+        prob = np.asarray(values, dtype=float).copy()
+        prob = np.clip(prob, 0.0, None)
+        total = np.sum(prob)
+        if (not np.isfinite(total)) or total <= 0:
+            raise ValueError("Probability map is empty or invalid.")
+        prob /= total
 
-        img, ax = sky_map.plot(cont=conf_level)
+        order = np.argsort(prob)[::-1]
+        n_pix = int(np.searchsorted(np.cumsum(prob[order]), conf_level) + 1)
+        n_pix = min(max(n_pix, 1), prob.size)
+
+        region = np.full(prob.size, np.nan)
+        region[order[:n_pix]] = prob[order[:n_pix]]
+
+        nside = hp.get_nside(prob)
+        hmap = HealpixMap(nside=nside, coordsys=coordsys, density=False)
+        hmap[:] = region
+        img, ax = hmap.plot()
         ax.grid(alpha=0.5)
 
         true_coord = SkyCoord(l=true_l * u.deg, b=true_b * u.deg, frame="galactic")
@@ -517,8 +535,10 @@ class ACSLocalizerBCT:
         )
 
         ax.legend(loc="upper right", frameon=True)
-        if title is not None:
-            ax.set_title(title)
+        area = n_pix * hp.nside2pixarea(nside, degrees=True)
+        if title is None:
+            title = f"{100 * conf_level:.0f}% region  area={area:.2f} deg^2"
+        ax.set_title(title)
 
         if save_path is not None:
             plt.savefig(save_path, dpi=300, bbox_inches="tight")
