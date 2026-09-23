@@ -1,8 +1,10 @@
 import pickle
 import numpy as np
 import matplotlib.pyplot as plt
+import healpy as hp
 import astropy.units as u
 from astropy.coordinates import SkyCoord, Galactic, ICRS
+from scipy.stats import binom, norm
 from bctools.loc import TSMap, NormLocLike
 from scoords import Attitude, SpacecraftFrame
 
@@ -438,6 +440,324 @@ class ACSLocalizerBCT:
 
         return img, ax
 
+    def prepare_skymaps(self, results):
+        """
+        Prepare probability maps once so harmonic transforms can be reused.
+
+        ``map2alm`` is expensive. This method normalizes each probability
+        ``sky_map``, converts it to RING ordering, finds the HEALPix pixel
+        of the true source, and stores the spherical-harmonic coefficients.
+        Call this once, then reuse the output for every systematic sigma.
+
+        Parameters
+        ----------
+        results : list of dict
+            Each dict must contain:
+            - ``sky_map``: probability HEALPix map (uses ``_data``)
+            - ``source_galactic_l``, ``source_galactic_b``: true Galactic
+              coordinates in degrees (not the reconstructed location)
+
+        Returns
+        -------
+        list of dict
+            Prepared items with ``prob``, ``alm``, ``ipix_true``,
+            ``nside`` and ``lmax``. Failed maps are skipped.
+        """
+        prepared = []
+        invalid = []
+        for i, result in enumerate(results):
+            sky_map = result["sky_map"]
+            prob = np.asarray(sky_map._data, dtype=float).copy()
+
+            # Skip failed / NaN maps
+            if not np.all(np.isfinite(prob)):
+                invalid.append(i)
+                continue
+            total = np.sum(prob)
+            if (not np.isfinite(total)) or total <= 0:
+                invalid.append(i)
+                continue
+
+            prob /= total
+
+            # Harmonic transforms require RING ordering
+            if "nest" in str(getattr(sky_map, "scheme", "ring")).lower():
+                prob = hp.reorder(prob, n2r=True)
+
+            nside = hp.get_nside(prob)
+
+            # HEALPix: theta = colatitude, phi = longitude
+            l_true = result["source_galactic_l"]
+            b_true = result["source_galactic_b"]
+            ipix_true = hp.ang2pix(
+                nside,
+                np.deg2rad(90.0 - b_true),
+                np.deg2rad(l_true),
+                nest=False,
+            )
+
+            lmax = 3 * nside - 1
+            prepared.append({
+                "prob": prob,
+                "alm": hp.map2alm(prob, lmax=lmax, iter=0),
+                "ipix_true": ipix_true,
+                "nside": nside,
+                "lmax": lmax,
+            })
+
+        print("Total / valid / excluded GRBs:", len(results), len(prepared), len(invalid))
+        if invalid:
+            print("Excluded indices:", invalid)
+        return prepared
+
+    @staticmethod
+    def smooth_prepared_map(item, sigma_deg):
+        """
+        Apply a Gaussian beam to a prepared probability map.
+
+        ``sigma_deg`` is the Gaussian standard deviation in degrees,
+        not the FWHM. ``sigma_deg = 0`` returns the unsmoothed map.
+
+        The beam in harmonic space is
+        ``B_l = exp[-0.5 l(l+1) sigma^2]``.
+        Tiny negative values from the inverse transform are clipped,
+        then the map is renormalized.
+
+        Parameters
+        ----------
+        item : dict
+            Output of ``prepare_skymaps`` (must include ``prob``,
+            ``alm``, ``nside``, ``lmax``).
+        sigma_deg : float
+            Gaussian sigma in degrees.
+
+        Returns
+        -------
+        ndarray or None
+            Smoothed probability map, or None if the result is invalid.
+        """
+        if sigma_deg == 0:
+            return item["prob"].copy()
+
+        sigma_rad = np.deg2rad(sigma_deg)
+        ell = np.arange(item["lmax"] + 1)
+        beam = np.exp(-0.5 * ell * (ell + 1) * sigma_rad**2)
+        prob = hp.alm2map(
+            hp.almxfl(item["alm"], beam),
+            nside=item["nside"],
+            lmax=item["lmax"],
+        )
+        # Numerical inverse transforms can yield ~-1e-15
+        prob = np.clip(prob, 0.0, None)
+        total = prob.sum()
+        if total <= 0 or not np.isfinite(total):
+            return None
+        return prob / total
+
+    def pp_curve_smoothed(self, prepared, values, sigma_deg):
+        """
+        Build the P-P curve at a given systematic Gaussian sigma.
+
+        For each GRB the credible level of the true position is the
+        sum of all pixels with probability >= that of the true pixel.
+        The P-P fraction at containment C is the fraction of GRBs
+        with that credible level <= C.
+
+        Parameters
+        ----------
+        prepared : list of dict
+            Output of ``prepare_skymaps``.
+        values : array
+            Credible levels at which to evaluate the curve (e.g. 0 to 1
+            in steps of 0.01).
+        sigma_deg : float
+            Systematic Gaussian sigma in degrees (0 = no smoothing).
+
+        Returns
+        -------
+        credible_levels : ndarray
+            True-position credible level of each GRB.
+        fraction : ndarray
+            Contained fraction at each value in ``values``.
+        """
+        cls = []
+        for item in prepared:
+            prob = self.smooth_prepared_map(item, sigma_deg)
+            if prob is None:
+                continue
+            p_true = prob[item["ipix_true"]]
+            cls.append(np.sum(prob[prob >= p_true]))
+        cls = np.asarray(cls)
+        fraction = np.searchsorted(np.sort(cls), values, side="right") / len(cls)
+        return cls, fraction
+
+    @staticmethod
+    def pp_binomial_bands(values, N):
+        """
+        1, 2 and 3 sigma binomial bands around the P-P diagonal.
+
+        For a perfectly calibrated sample of size N, the contained
+        fraction at each credible level is a binomial draw. The bands
+        are the central interval of that distribution, with
+        ``alpha = 2 * (1 - Phi(n_sigma))``.
+
+        Parameters
+        ----------
+        values : array
+            Credible levels (nominal coverage).
+        N : int
+            Number of events used in the P-P curve.
+
+        Returns
+        -------
+        dict
+            ``bands[nsigma] = (lower, upper)`` for nsigma in {1, 2, 3}.
+        """
+        bands = {}
+        for nsigma in (1, 2, 3):
+            alpha = 2.0 * norm.sf(nsigma)
+            bands[nsigma] = (
+                binom.ppf(alpha / 2.0, N, values) / N,
+                binom.ppf(1.0 - alpha / 2.0, N, values) / N,
+            )
+        return bands
+
+    def plot_pp_coverage(self, results, values=None, show=True):
+        """
+        Plot the P-P frequentist coverage curve with no systematic smoothing.
+
+        For each credible level C from 0 to 1 in 1% steps, plot the
+        fraction of GRBs whose true position falls inside the C region.
+        1, 2 and 3 sigma binomial bands around the diagonal are shown.
+
+        Parameters
+        ----------
+        results : list of dict
+            Same format as ``prepare_skymaps`` (``sky_map`` plus true
+            Galactic ``source_galactic_l`` / ``source_galactic_b``).
+        values : array, optional
+            Credible levels. Default is 0, 0.01, ..., 1.00.
+        show : bool
+            If True, display the figure.
+
+        Returns
+        -------
+        dict
+            Output of ``calibrate_pp_coverage`` with ``sigma_sys_deg=[0]``.
+        """
+        return self.calibrate_pp_coverage(
+            results, sigma_sys_deg=[0.0], values=values, show=show
+        )
+
+    def calibrate_pp_coverage(
+        self, results, sigma_sys_deg=(0.0, 1.0, 2.0, 3.0), values=None, show=True
+    ):
+        """
+        Overlay P-P curves after Gaussian smoothing at several systematic sigmas.
+
+        Harmonic coefficients are computed once in ``prepare_skymaps``.
+        Each ``sigma_sys_deg`` is the Gaussian standard deviation in
+        degrees (not FWHM). Pick the sigma whose curve lies on the
+        diagonal (perfect calibration).
+
+        Parameters
+        ----------
+        results : list of dict
+            Same format as ``prepare_skymaps``.
+        sigma_sys_deg : sequence of float
+            Systematic Gaussian sigmas to test, in degrees.
+        values : array, optional
+            Credible levels. Default is 0, 0.01, ..., 1.00.
+        show : bool
+            If True, display the figure.
+
+        Returns
+        -------
+        dict
+            ``values``, ``per_sigma`` (credible levels, P-P fraction,
+            90% coverage for each sigma), ``bands``, and ``N``.
+        """
+        if values is None:
+            values = np.linspace(0.0, 1.0, 101)
+        prepared = self.prepare_skymaps(results)
+
+        per_sigma = {}
+        for sigma_deg in sigma_sys_deg:
+            cl, fraction = self.pp_curve_smoothed(prepared, values, float(sigma_deg))
+            cov90 = float(np.mean(cl <= 0.90))
+            print(f"Coverage 90%, sigma={sigma_deg:g} deg: {cov90:.3f}  (N={len(cl)})")
+            per_sigma[float(sigma_deg)] = {
+                "credible_levels": cl,
+                "fraction": fraction,
+                "coverage_90": cov90,
+            }
+
+        N = len(next(iter(per_sigma.values()))["credible_levels"])
+        bands = self.pp_binomial_bands(values, N)
+
+        plt.figure(figsize=(8, 7))
+        plt.fill_between(values, bands[3][0], bands[3][1], alpha=0.15, label=r"$3\sigma$ expected")
+        plt.fill_between(values, bands[2][0], bands[2][1], alpha=0.20, label=r"$2\sigma$ expected")
+        plt.fill_between(values, bands[1][0], bands[1][1], alpha=0.30, label=r"$1\sigma$ expected")
+        for sigma_deg, out in per_sigma.items():
+            plt.plot(
+                values, out["fraction"], linewidth=2,
+                label=rf"$\sigma_{{\rm sys}}={sigma_deg:g}^\circ$",
+            )
+        plt.plot(values, values, "--", color="black", linewidth=1.5, label="Perfect calibration")
+        plt.xlabel("Credible Level")
+        plt.ylabel("Fraction contained")
+        plt.xlim(0, 1)
+        plt.ylim(0, 1)
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        if show:
+            plt.show()
+        return {"values": values, "per_sigma": per_sigma, "bands": bands, "N": N}
+
+    def smooth_skymap_area(self, sky_map, sigma_deg, conf_level=0.9):
+        """
+        Smooth one probability sky map with a calibrated systematic kernel.
+
+        Runtime helper: after choosing ``sigma_deg`` from
+        ``calibrate_pp_coverage``, apply that Gaussian to a single map
+        and return the new containment area at ``conf_level``.
+
+        Parameters
+        ----------
+        sky_map : map object
+            Probability HEALPix map (uses ``_data``).
+        sigma_deg : float
+            Gaussian systematic sigma in degrees. 0 skips smoothing.
+        conf_level : float
+            Containment fraction, default 0.9.
+
+        Returns
+        -------
+        dict
+            Smoothed probability map, containment area in deg^2, and
+            equivalent-disk radius in degrees.
+        """
+        prob = np.asarray(sky_map._data, dtype=float).copy()
+        prob /= np.sum(prob)
+        if "nest" in str(getattr(sky_map, "scheme", "ring")).lower():
+            prob = hp.reorder(prob, n2r=True)
+        nside = hp.get_nside(prob)
+        item = {"prob": prob, "nside": nside, "lmax": 3 * nside - 1}
+        if sigma_deg != 0:
+            item["alm"] = hp.map2alm(prob, lmax=item["lmax"], iter=0)
+        prob = self.smooth_prepared_map(item, sigma_deg)
+
+        # Smallest set of pixels whose probability sums to conf_level
+        order = np.argsort(prob)[::-1]
+        n_pix = int(np.searchsorted(np.cumsum(prob[order]), conf_level) + 1)
+        area = n_pix * hp.nside2pixarea(nside, degrees=True)
+        return {
+            "prob": prob,
+            "cont_area_deg2": float(area),
+            "eq_radius_deg": float(np.sqrt(area / np.pi)),
+        }
 
     @staticmethod
     def _load_pickle(path):
