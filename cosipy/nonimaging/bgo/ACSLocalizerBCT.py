@@ -456,30 +456,34 @@ class ACSLocalizerBCT:
         loc_l,
         loc_b,
         conf_level=0.9,
+        scheme=None,
         coordsys="galactic",
         show=True,
         save_path=None,
         title=None,
     ):
         """
-        Plot the X% containment pixels of a probability HEALPix array.
+        Plot the X% containment region of a probability HEALPix map.
 
-        ``SkyMap.plot`` draws a cumulative-probability alpha overlay, not
-        a sharp error region. Here pixels are ranked by probability and
-        kept until their sum reaches ``conf_level`` (same definition as
-        ``smooth_skymap_area``). Only those pixels are plotted.
+        Pixels are ranked by probability and kept until their sum reaches
+        ``conf_level`` (same definition as ``smooth_skymap_area``). The
+        rest of the sky is set to 0 and drawn with ``HealpixMap.plot``.
 
         Parameters
         ----------
-        values : array
-            Probability map (e.g. ``sky_map._data`` or the ``prob`` array
-            returned by ``smooth_skymap_area``).
+        values : array or map object
+            Probability map. An array, or an object with ``_data``
+            (and optionally ``scheme``).
         true_l, true_b : float
             True Galactic coordinates in degrees.
         loc_l, loc_b : float
             Reconstructed Galactic coordinates in degrees.
         conf_level : float
             Containment fraction, default 0.9.
+        scheme : {'ring', 'nested'} or None
+            HEALPix ordering of ``values``. If None, use the map object's
+            ``scheme`` when available, otherwise ``ring``.
+            ``smooth_skymap_area`` returns RING maps.
         coordsys : str
             Coordinate system of the map, default ``galactic``.
         show : bool
@@ -494,6 +498,13 @@ class ACSLocalizerBCT:
         tuple or None
             ``(img, ax)`` when ``show=False``, otherwise None.
         """
+        if scheme is None:
+            scheme = str(getattr(values, "scheme", "ring"))
+        scheme = scheme.lower()
+        scheme = "nested" if "nest" in scheme else "ring"
+
+        if hasattr(values, "_data"):
+            values = values._data
         prob = np.asarray(values, dtype=float).copy()
         prob = np.clip(prob, 0.0, None)
         total = np.sum(prob)
@@ -509,11 +520,11 @@ class ACSLocalizerBCT:
         region[order[:n_pix]] = prob[order[:n_pix]]
 
         nside = hp.get_nside(prob)
-        hmap = HealpixMap(nside=nside, coordsys=coordsys, density=False)
+        hmap = HealpixMap(
+            nside=nside, scheme=scheme, coordsys=coordsys, density=False
+        )
         hmap[:] = region
         img, ax = hmap.plot()
-        if hasattr(hmap, "plot_grid"):
-            hmap.plot_grid(ax=ax, color="white", linewidth=0.2)
         ax.grid(color="white", alpha=0.6)
 
         true_coord = SkyCoord(l=true_l * u.deg, b=true_b * u.deg, frame="galactic")
