@@ -447,6 +447,88 @@ class ACSLocalizerBCT:
 
         return img, ax
 
+    def plot_skymap(
+        self,
+        values,
+        true_l,
+        true_b,
+        loc_l,
+        loc_b,
+        conf_level=0.9,
+        coordsys="galactic",
+        show=True,
+        save_path=None,
+        title=None,
+    ):
+        """
+        Plot a probability HEALPix array with the containment contour
+        and the true / reconstructed locations.
+
+        Parameters
+        ----------
+        values : array
+            Probability map (e.g. ``sky_map._data`` or the ``prob`` array
+            returned by ``smooth_skymap_area``).
+        true_l, true_b : float
+            True Galactic coordinates in degrees.
+        loc_l, loc_b : float
+            Reconstructed Galactic coordinates in degrees.
+        conf_level : float
+            Containment fraction drawn by ``SkyMap.plot`` (default 0.9).
+        coordsys : str
+            Coordinate system of the map, default ``galactic``.
+        show : bool
+            If True, display the figure.
+        save_path : str or None
+            Optional PNG path.
+        title : str or None
+            Optional axes title.
+
+        Returns
+        -------
+        tuple or None
+            ``(img, ax)`` when ``show=False``, otherwise None.
+        """
+        values = np.asarray(values, dtype=float)
+        sky_map = SkyMap(nside=hp.get_nside(values), coordsys=coordsys)
+        sky_map[:] = values
+
+        img, ax = sky_map.plot(cont=conf_level)
+        ax.grid(alpha=0.5)
+
+        true_coord = SkyCoord(l=true_l * u.deg, b=true_b * u.deg, frame="galactic")
+        ax.scatter(
+            true_coord.l.to(u.deg).value,
+            true_coord.b.to(u.deg).value,
+            color="red",
+            transform=ax.get_transform("world"),
+            s=2,
+            label="True source",
+        )
+
+        best_loc = SkyCoord(l=loc_l * u.deg, b=loc_b * u.deg, frame="galactic")
+        ax.scatter(
+            best_loc.l.to(u.deg).value,
+            best_loc.b.to(u.deg).value,
+            color="blue",
+            transform=ax.get_transform("world"),
+            s=2,
+            label="Best localization",
+        )
+
+        ax.legend(loc="upper right", frameon=True)
+        if title is not None:
+            ax.set_title(title)
+
+        if save_path is not None:
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+
+        if show:
+            plt.show()
+            return None
+        return img, ax
+
+
     def prepare_skymaps(self, results):
         """
         Prepare probability maps once so harmonic transforms can be reused.
