@@ -505,14 +505,16 @@ class ACSLocalizerBCT:
         n_pix = int(np.searchsorted(np.cumsum(prob[order]), conf_level) + 1)
         n_pix = min(max(n_pix, 1), prob.size)
 
-        region = np.full(prob.size, np.nan)
+        region = np.zeros(prob.size)
         region[order[:n_pix]] = prob[order[:n_pix]]
 
         nside = hp.get_nside(prob)
         hmap = HealpixMap(nside=nside, coordsys=coordsys, density=False)
         hmap[:] = region
         img, ax = hmap.plot()
-        ax.grid(alpha=0.5)
+        if hasattr(hmap, "plot_grid"):
+            hmap.plot_grid(ax=ax, color="white", linewidth=0.2)
+        ax.grid(color="white", alpha=0.6)
 
         true_coord = SkyCoord(l=true_l * u.deg, b=true_b * u.deg, frame="galactic")
         ax.scatter(
@@ -667,25 +669,25 @@ class ACSLocalizerBCT:
         """
         Build the P-P curve at a given systematic Gaussian sigma.
 
-        For each GRB the credible level of the true position is the
+        For each GRB the confidence level of the true position is the
         sum of all pixels with probability >= that of the true pixel.
         The P-P fraction at containment C is the fraction of GRBs
-        with that credible level <= C.
+        with that confidence level <= C.
 
         Parameters
         ----------
         prepared : list of dict
             Output of ``prepare_skymaps``.
         values : array
-            Credible levels at which to evaluate the curve (e.g. 0 to 1
+            Confidence levels at which to evaluate the curve (e.g. 0 to 1
             in steps of 0.01).
         sigma_deg : float
             Systematic Gaussian sigma in degrees (0 = no smoothing).
 
         Returns
         -------
-        credible_levels : ndarray
-            True-position credible level of each GRB.
+        confidence_levels : ndarray
+            True-position confidence level of each GRB.
         fraction : ndarray
             Contained fraction at each value in ``values``.
         """
@@ -706,14 +708,14 @@ class ACSLocalizerBCT:
         1, 2 and 3 sigma binomial bands around the P-P diagonal.
 
         For a perfectly calibrated sample of size N, the contained
-        fraction at each credible level is a binomial draw. The bands
+        fraction at each confidence level is a binomial draw. The bands
         are the central interval of that distribution, with
         ``alpha = 2 * (1 - Phi(n_sigma))``.
 
         Parameters
         ----------
         values : array
-            Credible levels (nominal coverage).
+            Confidence levels (nominal coverage).
         N : int
             Number of events used in the P-P curve.
 
@@ -735,7 +737,7 @@ class ACSLocalizerBCT:
         """
         Plot the P-P frequentist coverage curve with no systematic smoothing.
 
-        For each credible level C from 0 to 1 in 1% steps, plot the
+        For each confidence level C from 0 to 1 in 1% steps, plot the
         fraction of GRBs whose true position falls inside the C region.
         1, 2 and 3 sigma binomial bands around the diagonal are shown.
 
@@ -745,7 +747,7 @@ class ACSLocalizerBCT:
             Same format as ``prepare_skymaps`` (``sky_map`` plus true
             Galactic ``source_galactic_l`` / ``source_galactic_b``).
         values : array, optional
-            Credible levels. Default is 0, 0.01, ..., 1.00.
+            Confidence levels. Default is 0, 0.01, ..., 1.00.
         show : bool
             If True, display the figure.
 
@@ -776,14 +778,14 @@ class ACSLocalizerBCT:
         sigma_sys_deg : sequence of float
             Systematic Gaussian sigmas to test, in degrees.
         values : array, optional
-            Credible levels. Default is 0, 0.01, ..., 1.00.
+            Confidence levels. Default is 0, 0.01, ..., 1.00.
         show : bool
             If True, display the figure.
 
         Returns
         -------
         dict
-            ``values``, ``per_sigma`` (credible levels, P-P fraction,
+            ``values``, ``per_sigma`` (confidence levels, P-P fraction,
             90% coverage for each sigma), ``bands``, and ``N``.
         """
         if values is None:
@@ -796,12 +798,12 @@ class ACSLocalizerBCT:
             cov90 = float(np.mean(cl <= 0.90))
             print(f"Coverage 90%, sigma={sigma_deg:g} deg: {cov90:.3f}  (N={len(cl)})")
             per_sigma[float(sigma_deg)] = {
-                "credible_levels": cl,
+                "confidence_levels": cl,
                 "fraction": fraction,
                 "coverage_90": cov90,
             }
 
-        N = len(next(iter(per_sigma.values()))["credible_levels"])
+        N = len(next(iter(per_sigma.values()))["confidence_levels"])
         bands = self.pp_binomial_bands(values, N)
 
         plt.figure(figsize=(8, 7))
@@ -814,7 +816,7 @@ class ACSLocalizerBCT:
                 label=rf"$\sigma_{{\rm sys}}={sigma_deg:g}^\circ$",
             )
         plt.plot(values, values, "--", color="black", linewidth=1.5, label="Perfect calibration")
-        plt.xlabel("Credible Level")
+        plt.xlabel("Confidence Level")
         plt.ylabel("Fraction contained")
         plt.xlim(0, 1)
         plt.ylim(0, 1)
