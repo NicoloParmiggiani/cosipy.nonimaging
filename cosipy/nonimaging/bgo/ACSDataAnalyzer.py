@@ -1,12 +1,106 @@
-import healpy as hp
-from mhealpy.containers.healpix_map import HealpixMap
-from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 from astropy.io import fits
 from gdt.core.background.binned import Polynomial
 from gdt.core.data_primitives import TimeBins
 from bctools.analysis import BayesianBlocksLightcurve
 import numpy as np
+
+# Spacecraft-frame panel name -> FITS count column.
+# SCBA is z, SCBB is y, SCBC is x. A0/A1 are the two faces.
+_PANEL_COLUMNS = {
+    "z1": "SCBA_A0",
+    "z0": "SCBA_A1",
+    "y1": "SCBB_A0",
+    "y0": "SCBB_A1",
+    "x1": "SCBC_A0",
+    "x0": "SCBC_A1",
+}
+
+
+def _bins_overlapping(lc, tstart, tstop):
+    """Light-curve bins whose interval overlaps [tstart, tstop]."""
+    return (lc.hi_edges > tstart) & (lc.lo_edges < tstop)
+
+
+def _empty_rank():
+    """Ranking record used when a panel has no SNR selection."""
+    indices = np.array([], dtype=int)
+    return {
+        "snr": 0.0,
+        "d": np.nan,
+        "b": np.nan,
+        "n_bins": 0,
+        "indices": indices,
+        "indices_time": indices,
+        "t90_tstart": np.nan,
+        "t90_tstop": np.nan,
+        "t90": np.nan,
+    }
+
+
+def _panel_rank(selection, tstart, tstop, t90, snr):
+    """Dictionary with one panel's greedy SNR, counts, and its own T90."""
+    if selection is None:
+        info = _empty_rank()
+        info["t90_tstart"] = float(tstart)
+        info["t90_tstop"] = float(tstop)
+        info["t90"] = float(t90)
+        return info
+
+    return {
+        "snr": snr,
+        "d": float(selection["d_sum"]),
+        "b": float(selection["b_sum"]),
+        "n_bins": int(selection["indices"].size),
+        "indices": np.asarray(selection["indices"], dtype=int),
+        "indices_time": np.asarray(selection["indices_time"], dtype=int),
+        "t90_tstart": float(tstart),
+        "t90_tstop": float(tstop),
+        "t90": float(t90),
+    }
+
+
+def _failed_analysis(lc_fallback):
+    """Sentinel result when no panel produces a T90."""
+    return {
+        "lc_sel": lc_fallback,
+        "bb_lc": None,
+        "lc": None,
+        "best_panel": None,
+        "best_snr": -9999,
+        "bkg_fits": {},
+        "panel_snr": {},
+        "snr_bin_selection": None,
+        "sanity": None,
+        "signal_tstart": -9999,
+        "signal_tstop": -9999,
+        "t90": -9999,
+        "t90_err_low": -9999,
+        "t90_err_high": -9999,
+        "significance": -9999,
+        "significance_peak": -9999,
+        "t_min": None,
+        "t_max": None,
+    }
+
+
+def _li_ma_significance(signal_lc, bkg_before, bkg_after):
+    """Li & Ma significance of the on-burst window against the off-burst exposure."""
+    t_on = np.sum(signal_lc.exposure)
+    t_off = np.sum(bkg_before.exposure) + np.sum(bkg_after.exposure)
+    n_on = np.sum(signal_lc.rates * signal_lc.exposure)
+    n_off = (
+        np.sum(bkg_before.rates * bkg_before.exposure)
+        + np.sum(bkg_after.rates * bkg_after.exposure)
+    )
+    if t_off <= 0 or n_on <= 0 or n_off <= 0:
+        return 0.0
+
+    alpha = t_on / t_off
+    return np.sqrt(2) * (
+        n_on * np.log(((1 + alpha) / alpha) * (n_on / (n_on + n_off)))
+        + n_off * np.log((1 + alpha) * (n_off / (n_on + n_off)))
+    ) ** 0.5
 
 class ACSDataAnalyzer:
     """
@@ -52,31 +146,15 @@ class ACSDataAnalyzer:
         pass
         
     def open_fits_file(self, fits_path):
-
-        # =========================
-        # OPEN FITS
-        # =========================
+        """Read bin edges and the six panel count columns from an ACS FITS file."""
         hdul = fits.open(fits_path)
-
-        header = hdul[0].header
-        time_start = header["DATE-OBS"]
-
+        # Touch DATE-OBS so a file without the observation header fails here.
+        hdul[0].header["DATE-OBS"]
         data = hdul[1].data
 
-        # =========================
-        # TIME
-        # =========================
         t_min = data["TIME"]
-
-        dt = data["TIMEDEL"][:, 0]
-
-        t_max = t_min + dt
-
-        # =========================
-        # COUNTS
-        # =========================
+        t_max = t_min + data["TIMEDEL"][:, 0]
         counts = data["COUNT"]
-
         panels = {
             "SCBA_A0": counts[:, 0],
             "SCBA_A1": counts[:, 1],
@@ -90,35 +168,7 @@ class ACSDataAnalyzer:
 
         return t_min, t_max, panels
 
-    def open_fits_file_old(self,fits_path):
-        
-        # =========================
-        # OPEN FITS
-        # =========================
-        hdul = fits.open(fits_path)
-        header = hdul[0].header
-        
-        time_start = header['DATE-OBS']
-        
-        data = hdul[1].data
-
-        t_min = data["T_MIN"]
-        t_max = data["T_MAX"]
-        t_center = 0.5 * (t_min + t_max)
-        
-        panels = {
-            "SCBA_A0": data["COUNTS_SCBA_A0_G"],
-            "SCBA_A1": data["COUNTS_SCBA_A1_G"],
-            "SCBB_A0": data["COUNTS_SCBB_A0_G"],
-            "SCBB_A1": data["COUNTS_SCBB_A1_G"],
-            "SCBC_A0": data["COUNTS_SCBC_A0_G"],
-            "SCBC_A1": data["COUNTS_SCBC_A1_G"],
-        }
-        
-        hdul.close()
-        
-        return t_min,t_max,panels
-        
+    
     def plot_acs_from_fits(self,fits_path,plot_counts=False):
 
         t_min,t_max,panels = self.open_fits_file(fits_path)
@@ -212,57 +262,27 @@ class ACSDataAnalyzer:
                 }
         """
 
-        # =========================
-        # TIME BINS
-        # =========================
+        # Bin widths are not uniform: 1 s, 250 ms and 50 ms.
         t_min = np.asarray(lightcurve["t_min"])
         t_max = np.asarray(lightcurve["t_max"])
-
-        # durata dei bin (non uniforme!)
         exposure = t_max - t_min
 
-        # =========================
-        # READ PANELS + MAPPING
-        # =========================
-        pan = lightcurve["panels"]
-
-        # mapping SCB → xyz (definito da te)
-        signal = {}
-
-        signal["z1"] = np.asarray(pan["SCBA_A0"])
-        signal["z0"] = np.asarray(pan["SCBA_A1"])
-
-        signal["y1"] = np.asarray(pan["SCBB_A0"])
-        signal["y0"] = np.asarray(pan["SCBB_A1"])
-
-        signal["x1"] = np.asarray(pan["SCBC_A0"])
-        signal["x0"] = np.asarray(pan["SCBC_A1"])
-
-        # if rate -> convert to counts
+        raw = lightcurve["panels"]
+        counts = {
+            name: np.asarray(raw[column])
+            for name, column in _PANEL_COLUMNS.items()
+        }
         if isRate:
-            for k in signal:
-                signal[k] = signal[k] * exposure
+            counts = {name: values * exposure for name, values in counts.items()}
 
-        # =========================
-        # LIGHT CURVES CONTSRUCTION
-        # =========================
-        lc = {}
+        lc = {
+            panel: TimeBins(counts[panel], t_min, t_max, exposure)
+            for panel in panels
+        }
 
-        for panel in panels:
-            lc[panel] = TimeBins(
-                signal[panel],
-                t_min,
-                t_max,
-                exposure
-            )
-
-        # =========================
-        # BAYESIAN BLOCKS ON EVERY PANEL
-        # =========================
-        # Each panel gets its own T90. Background is fit excluding that window,
-        # and panels are ranked by the greedy cumulative SNR inside it.
-        # The winning panel's T90 becomes the common window.
-        def _compute_bb(panel_lc):
+        # Each panel is ranked inside its own T90. The winner's T90
+        # becomes the common window used for the final counts.
+        def t90_of(panel_lc):
             bb = BayesianBlocksLightcurve(panel_lc)
             bb.compute_bayesian_blocks(p0=p0)
             t90_val = bb.duration(quantile=.9)
@@ -270,43 +290,8 @@ class ACSDataAnalyzer:
             tstart, tstop = bb.quantile_range(quantile=.9)
             return bb, t90_val, t90_err, tstart, tstop
 
-        def _empty_rank():
-            indices = np.array([], dtype=int)
-            return {
-                "snr": 0.0,
-                "d": np.nan,
-                "b": np.nan,
-                "n_bins": 0,
-                "indices": indices,
-                "indices_time": indices,
-                "t90_tstart": np.nan,
-                "t90_tstop": np.nan,
-                "t90": np.nan,
-            }
-
-        def _failed_analysis(lc_fallback):
-            return {
-                "lc_sel": lc_fallback,
-                "bb_lc": None,
-                "lc": None,
-                "best_panel": None,
-                "best_snr": -9999,
-                "bkg_fits": {},
-                "panel_snr": {},
-                "snr_bin_selection": None,
-                "sanity": None,
-                "signal_tstart": -9999,
-                "signal_tstop": -9999,
-                "t90": -9999,
-                "t90_err_low": -9999,
-                "t90_err_high": -9999,
-                "significance": -9999,
-                "significance_peak": -9999,
-                "t_min": None,
-                "t_max": None
-            }
-
         bb_by_panel = {}
+        bb_panels = {}
         bkg_fits = {}
         panel_snr = {}
         best_panel = None
@@ -315,157 +300,85 @@ class ACSDataAnalyzer:
         for panel in panels:
             panel_lc = lc[panel]
             try:
-                bb_panel, t90_panel, t90_err_panel, tstart_panel, tstop_panel = _compute_bb(panel_lc)
-            except Exception as e:
-                print(e)
+                bb_panel, t90_panel, t90_err_panel, tstart, tstop = t90_of(panel_lc)
+            except Exception as exc:
+                print(exc)
                 print(f"WARNING: Bayesian blocks failed on {panel}")
                 bb_by_panel[panel] = None
+                bb_panels[panel] = None
                 bkg_fits[panel] = None
                 panel_snr[panel] = _empty_rank()
                 continue
 
-            bb_by_panel[panel] = (bb_panel, t90_panel, t90_err_panel, tstart_panel, tstop_panel)
-            in_t90 = (
-                (panel_lc.hi_edges > tstart_panel)
-                & (panel_lc.lo_edges < tstop_panel)
-            )
+            bb_by_panel[panel] = (bb_panel, t90_panel, t90_err_panel, tstart, tstop)
+            bb_panels[panel] = bb_panel
+            in_t90 = _bins_overlapping(panel_lc, tstart, tstop)
             selection = None
             snr = 0.0
 
             try:
-                res = self.fit_background(
+                fit = self.fit_background(
                     panel_lc,
-                    (tstart_panel, tstop_panel),
+                    (tstart, tstop),
                     buffer=bkg_buffer,
-                    order=bkg_order
+                    order=bkg_order,
                 )
-            except RuntimeError as e:
-                print(e)
+            except RuntimeError as exc:
+                print(exc)
                 bkg_fits[panel] = None
             else:
-                bkg_fits[panel] = res
+                bkg_fits[panel] = fit
                 if np.any(in_t90):
                     selection = self.select_optimal_snr_bins(
                         panel_lc.counts,
-                        res["bkg_counts"],
+                        fit["bkg_counts"],
                         mask=in_t90,
                     )
                     snr = selection["snr_optimal"]
 
-            if selection is None:
-                info = _empty_rank()
-                info["t90_tstart"] = float(tstart_panel)
-                info["t90_tstop"] = float(tstop_panel)
-                info["t90"] = float(t90_panel)
-                panel_snr[panel] = info
-            else:
-                panel_snr[panel] = {
-                    "snr": snr,
-                    "d": float(selection["d_sum"]),
-                    "b": float(selection["b_sum"]),
-                    "n_bins": int(selection["indices"].size),
-                    "indices": np.asarray(selection["indices"], dtype=int),
-                    "indices_time": np.asarray(selection["indices_time"], dtype=int),
-                    "t90_tstart": float(tstart_panel),
-                    "t90_tstop": float(tstop_panel),
-                    "t90": float(t90_panel),
-                }
-
+            panel_snr[panel] = _panel_rank(selection, tstart, tstop, t90_panel, snr)
             if selection is not None and snr > best_snr:
                 best_snr = snr
                 best_panel = panel
 
         if best_panel is None:
             print("WARNING: Bayesian blocks failed on every panel")
-            return _failed_analysis(lc[panels[0]] if panels else None)
+            fallback = lc[panels[0]] if panels else None
+            return _failed_analysis(fallback)
 
         bb_lc, t90, t90_error, t90_tstart, t90_tstop = bb_by_panel[best_panel]
         lc_sel = lc[best_panel]
         signal_range = (t90_tstart, t90_tstop)
 
-        # Refit every panel on the winning T90. Ranking fits excluded each
-        # panel's own window; counts must use one common burst window.
+        # Ranking fits excluded each panel's own window. Refit every panel
+        # on the single winning T90 before summing counts.
         for panel in panels:
             try:
                 bkg_fits[panel] = self.fit_background(
                     lc[panel],
                     signal_range,
                     buffer=bkg_buffer,
-                    order=bkg_order
+                    order=bkg_order,
                 )
-            except RuntimeError as e:
-                print(e)
+            except RuntimeError as exc:
+                print(exc)
                 bkg_fits[panel] = None
 
-        # =========================
-        # GREEDY HIGH-SNR BIN SET
-        # =========================
-        # Only bins inside the selected T90 can enter the sum. The same
-        # indices are reused for every panel.
+        # Final bins are chosen only inside the common T90, on the winning
+        # panel. The same indices are then applied to every panel.
         snr_bin_selection = None
         best_fit = bkg_fits.get(best_panel)
         if best_fit is not None:
-            in_final_t90 = (
-                (lc_sel.hi_edges > t90_tstart)
-                & (lc_sel.lo_edges < t90_tstop)
-            )
             snr_bin_selection = self.select_optimal_snr_bins(
                 lc_sel.counts,
                 best_fit["bkg_counts"],
-                mask=in_final_t90,
+                mask=_bins_overlapping(lc_sel, t90_tstart, t90_tstop),
             )
 
-        # =========================
-        # SIGNAL + BACKGROUND
-        # =========================
         signal_lc = lc_sel.slice(t90_tstart, t90_tstop)
-
-        # background prima e dopo (FIX rispetto al tuo codice originale)
-        bkg_lc1 = lc_sel.slice(lc_sel.centroids[0], t90_tstart)
-        bkg_lc2 = lc_sel.slice(t90_tstop, lc_sel.centroids[-1])
-
-        t_on = np.sum(signal_lc.exposure)
-        t_off = np.sum(bkg_lc1.exposure) + np.sum(bkg_lc2.exposure)
-
-        N_on = np.sum(signal_lc.rates * signal_lc.exposure)
-        N_off = (
-            np.sum(bkg_lc1.rates * bkg_lc1.exposure) +
-            np.sum(bkg_lc2.rates * bkg_lc2.exposure)
-        )
-
-        alpha = t_on / t_off if t_off > 0 else 0
-
-        if alpha > 0 and N_on > 0 and N_off > 0:
-            S = np.sqrt(2) * (
-                N_on * np.log(((1 + alpha) / alpha) * (N_on / (N_on + N_off))) +
-                N_off * np.log((1 + alpha) * (N_off / (N_on + N_off)))
-            )**0.5
-        else:
-            S = 0
-
-        # # =========================
-        # # PEAK SIGNIFICANCE
-        # # =========================
-        # significance = []
-
-        # for rate, exp in zip(signal_lc.rates, signal_lc.exposure):
-        #     N_on_bin = rate * exp
-        #     alpha_bin = exp / t_off if t_off > 0 else 0
-
-        #     if alpha_bin > 0 and N_on_bin > 0 and N_off > 0:
-        #         S_bin = np.sqrt(2) * (
-        #             N_on_bin * np.log(((1 + alpha_bin) / alpha_bin) *
-        #                             (N_on_bin / (N_on_bin + N_off))) +
-        #             N_off * np.log((1 + alpha_bin) *
-        #                         (N_off / (N_on_bin + N_off)))
-        #         )**0.5
-        #     else:
-        #         S_bin = 0
-
-        #     significance.append(S_bin)
-
-        # significance = np.array(significance)
-        # S_peak = np.max(significance)
+        bkg_before = lc_sel.slice(lc_sel.centroids[0], t90_tstart)
+        bkg_after = lc_sel.slice(t90_tstop, lc_sel.centroids[-1])
+        significance = _li_ma_significance(signal_lc, bkg_before, bkg_after)
 
         sanity = None
         if sanity_check:
@@ -477,7 +390,6 @@ class ACSDataAnalyzer:
                     float(lc_sel.lo_edges[selected_bins].min()),
                     float(lc_sel.hi_edges[selected_bins].max()),
                 )
-
             sanity = {
                 "best_panel": best_panel,
                 "best_snr": best_snr,
@@ -491,12 +403,10 @@ class ACSDataAnalyzer:
                 "panels": list(panels),
             }
 
-        # =========================
-        # OUTPUT
-        # =========================
         return {
             "lc_sel": lc_sel,
             "bb_lc": bb_lc,
+            "bb_panels": bb_panels,
             "lc": lc,
             "best_panel": best_panel,
             "best_snr": best_snr,
@@ -509,7 +419,7 @@ class ACSDataAnalyzer:
             "t90": t90,
             "t90_err_low": t90_error[0],
             "t90_err_high": t90_error[1],
-            "significance": S,
+            "significance": significance,
             "significance_peak": -1,
             "t_min": t_min,
             "t_max": t_max
@@ -585,6 +495,8 @@ class ACSDataAnalyzer:
         snr_cum = -np.inf
         snr_history = []
 
+        # Recompute SNR on the summed counts. A positive bin can still
+        # lower it, because the background it adds grows the denominator.
         for i in order:
             d_new = d_sum + counts[i]
             b_new = b_sum + bkg_counts[i]
@@ -621,81 +533,56 @@ class ACSDataAnalyzer:
             "b_sum": float(b_sum),
         }
 
-    def fit_background(self,lc, signal_range, buffer=0.0, order=2):
-        
+    def fit_background(self, lc, signal_range, buffer=0.0, order=2):
         """
-        Fit del background polinomiale su una light curve GDT (TimeBins),
-        escludendo la finestra del segnale.
+        Polynomial background fit on a TimeBins light curve.
 
-        Parameters
-        ----------
-        lc : TimeBins
-            Light curve del detector.
-            Deve avere almeno: counts, lo_edges, hi_edges, exposure
-        signal_range : tuple
-            (tstart, tstop) del segnale/burst da escludere dal fit
-        buffer : float, optional
-            Margine extra da escludere attorno al segnale
-        order : int, optional
-            Ordine del polinomio
+        Bins inside ``signal_range``, expanded by ``buffer`` on both sides,
+        are left out of the fit. The model is then evaluated on every bin.
 
         Returns
         -------
-        result : dict
-            Dizionario con:
-            - "model"           : oggetto Polynomial fittato
-            - "mask_bkg"        : maschera booleana dei bin usati nel fit
-            - "bkg_rate"        : background stimato in rate
-            - "bkg_rate_err"    : errore sul background rate
-            - "bkg_counts"      : background stimato in counts/bin
-            - "bkg_counts_err"  : errore in counts/bin
-            - "net_counts"      : counts osservati - background counts
-            - "net_rate"        : rate osservato - background rate
+        dict
+            ``model`` is the fitted Polynomial.
+            ``mask_bkg`` marks bins used in the fit.
+            ``bkg_rate`` and ``bkg_counts`` are the model on every bin.
+            ``interpolate`` returns a rate, so counts are rate times exposure.
+            ``net_counts`` and ``net_rate`` are observed minus background.
         """
 
-        tstart_sig = signal_range[0]
-        tstop_sig = signal_range[1]
-        excl_start = tstart_sig - buffer
-        excl_stop = tstop_sig + buffer
+        tstart, tstop = signal_range
+        excl_start = tstart - buffer
+        excl_stop = tstop + buffer
 
-        # bin completamente fuori dalla regione esclusa
+        # A bin is background only when it lies fully outside the excluded window.
         mask_bkg = (lc.hi_edges <= excl_start) | (lc.lo_edges >= excl_stop)
 
         n_bkg_bins = np.sum(mask_bkg)
         if n_bkg_bins < (order + 2):
             raise RuntimeError(
-                f"Troppi pochi bin di background ({n_bkg_bins}) "
-                f"per un polinomio di ordine {order}"
+                f"Too few background bins ({n_bkg_bins}) "
+                f"for a polynomial of order {order}"
             )
 
-        # costruiamo il modello come in bctools
         bkg_model = Polynomial(
             counts=lc.counts[mask_bkg][:, np.newaxis],
             tstart=lc.lo_edges[mask_bkg],
             tstop=lc.hi_edges[mask_bkg],
-            exposure=lc.exposure[mask_bkg]
+            exposure=lc.exposure[mask_bkg],
         )
-
         bkg_model.fit(order=order)
 
-        #WARNING interpolate() return RATE, not counts
+        # interpolate() returns rate, not counts, with shape (N, 1).
         bkg_rate, bkg_rate_err = bkg_model.interpolate(
             tstart=lc.lo_edges,
-            tstop=lc.hi_edges
+            tstop=lc.hi_edges,
         )
-
-        # da shape (N, 1) a (N,)
         bkg_rate = np.squeeze(bkg_rate)
         bkg_rate_err = np.squeeze(bkg_rate_err)
 
-        # conversione a counts/bin
         bkg_counts = bkg_rate * lc.exposure
         bkg_counts_err = bkg_rate_err * lc.exposure
-
-        # osservati
         obs_rate = lc.counts / lc.exposure
-
-        # netti
         net_counts = lc.counts - bkg_counts
         net_rate = obs_rate - bkg_rate
 
@@ -1120,145 +1007,181 @@ class ACSDataAnalyzer:
                 else:
                     plt.show()
 
-    def extract_source_data_from_fits(self,fits_path,plot=False,save_plot=False,prefix="",panels = ['z1','z0','x1','x0','y1','y0'],p0=0.05,sanity_check=False):
-        
-        t_min,t_max,event_panels = self.open_fits_file(fits_path)
-        
-        light_curve = {"t_min":t_min,"t_max":t_max,"panels":event_panels}
-        
-        # compute the TimeBins LC, time_start, time_stop, t90 and Li&Ma signfiicance
-        bblocks_analysis_results = self.analyze_lc_with_bblocks(light_curve, p0=p0, isRate=False, panels=panels, sanity_check=sanity_check)
-        
-        acs_lc = bblocks_analysis_results['lc']
-        event_time_start = bblocks_analysis_results['signal_tstart']
-        lc_sel = bblocks_analysis_results['lc_sel']
-        bb_lc = bblocks_analysis_results['bb_lc']
-        print(bblocks_analysis_results['signal_tstart'])
-        t90_tstart = bblocks_analysis_results['signal_tstart']
-        t90_tstop = bblocks_analysis_results['signal_tstop']
-        
-        if bb_lc is None:
-            return -1,-1,-1,-1
-        signal_range = (t90_tstart,t90_tstop)
-        
-        #convert event time start from TT to Unix time stamp
-        #mjd_ref_timestamp = 1735689669.184
-        mjd_ref_timestamp = 1735689600.184
-        event_time_start_unix = mjd_ref_timestamp + event_time_start
-        
+        self._plot_bayesian_blocks_sanity_check(
+            results,
+            panels,
+            best_panel,
+            panel_snr,
+            t0,
+            save=save,
+            prefix=prefix,
+        )
+
+    def _plot_bayesian_blocks_sanity_check(
+        self,
+        results,
+        panels,
+        best_panel,
+        panel_snr,
+        t0,
+        save=False,
+        prefix="",
+    ):
+        """Six-panel figure of each panel's Bayesian-blocks light curve."""
+
+        bb_panels = results.get("bb_panels") or {}
+        fig, axes = plt.subplots(3, 2, figsize=(14, 10), sharex=True)
+        axes = axes.flatten()
+
+        for ax, panel in zip(axes, panels):
+            lc = results["lc"][panel]
+            info = panel_snr.get(panel, {})
+            bb = bb_panels.get(panel)
+            selected = panel == best_panel
+
+            t_edges = np.empty(2 * lc.lo_edges.size)
+            t_edges[0::2] = lc.lo_edges - t0
+            t_edges[1::2] = lc.hi_edges - t0
+            ax.plot(
+                t_edges,
+                np.repeat(lc.rates, 2),
+                color="0.75",
+                label="Observed rate",
+            )
+
+            if bb is not None:
+                blocks = bb.bb_lightcurve
+                ax.plot(
+                    np.append(blocks.lo_edges, blocks.hi_edges[-1]) - t0,
+                    np.append(blocks.rates, blocks.rates[-1]),
+                    drawstyle="steps-post",
+                    color="#1f77b4",
+                    label="Bayesian blocks",
+                )
+
+            t90_start = info.get("t90_tstart", np.nan)
+            t90_stop = info.get("t90_tstop", np.nan)
+            if np.isfinite(t90_start) and np.isfinite(t90_stop):
+                ax.axvspan(
+                    t90_start - t0,
+                    t90_stop - t0,
+                    color="olive",
+                    alpha=0.15,
+                    label="Own T90",
+                )
+
+            title = panel if bb is not None else f"{panel} | Bayesian blocks failed"
+            if selected:
+                title = f"SELECTED  {title}"
+                for spine in ax.spines.values():
+                    spine.set_color("darkorange")
+                    spine.set_linewidth(2.5)
+
+            ax.set_title(title)
+            ax.set_ylabel("Counts / s")
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc="upper right", fontsize=8)
+
+        axes[-1].set_xlabel("Time - common T90 center [s]")
+        axes[-2].set_xlabel("Time - common T90 center [s]")
+        fig.suptitle(
+            f"Bayesian blocks by panel | selected={best_panel}",
+            fontsize=13,
+        )
+        plt.tight_layout()
+
+        if save:
+            filename = f"{prefix}_bayesian_blocks_sanity_check.png"
+            plt.savefig(
+                self.output_dir + "/" + filename,
+                dpi=300,
+                bbox_inches="tight",
+            )
+            plt.close(fig)
+            print(f"Saved: {filename}")
+        else:
+            plt.show()
+
+    def extract_source_data_from_fits(self, fits_path, plot=False, save_plot=False, prefix="", panels=('z1', 'z0', 'x1', 'x0', 'y1', 'y0'), p0=0.05, sanity_check=False):
+        """
+        Read one GRB FITS file and return source and background counts.
+
+        The same bin indices, chosen on the winning panel inside its T90,
+        are summed on every panel.
+        """
+
+        t_min, t_max, event_panels = self.open_fits_file(fits_path)
+        light_curve = {"t_min": t_min, "t_max": t_max, "panels": event_panels}
+        analysis = self.analyze_lc_with_bblocks(
+            light_curve,
+            p0=p0,
+            isRate=False,
+            panels=panels,
+            sanity_check=sanity_check,
+        )
+
+        if analysis["bb_lc"] is None:
+            return -1, -1, -1, -1
+
+        t90_tstart = analysis["signal_tstart"]
+        t90_tstop = analysis["signal_tstop"]
+        signal_range = (t90_tstart, t90_tstop)
+
+        # TT seconds since 2025-01-01 00:00:00.184 UTC.
+        event_time_start_unix = 1735689600.184 + t90_tstart
+
         if plot:
-            self.plot_lc(lc_sel,bb_lc,signal_range,save=save_plot,prefix=prefix)
+            self.plot_lc(
+                analysis["lc_sel"],
+                analysis["bb_lc"],
+                signal_range,
+                save=save_plot,
+                prefix=prefix,
+            )
 
-        results = []
-        s_counts = []
-        b_counts = []
-
-
-        tstart = t90_tstart
-        tstop = t90_tstop
-        duration = tstop-tstart
-        bkg_fits = bblocks_analysis_results["bkg_fits"]
-        snr_sel = bblocks_analysis_results.get("snr_bin_selection") or {}
+        bkg_fits = analysis["bkg_fits"]
+        snr_sel = analysis.get("snr_bin_selection") or {}
         selected_indices = np.asarray(snr_sel.get("indices_time", []), dtype=int)
 
-        for p in panels:
-        
-            lc = acs_lc[p]
-            res = bkg_fits.get(p)
-            if res is None:
-                res = self.fit_background(lc, signal_range, buffer=1.0, order=2)
+        s_counts = []
+        b_counts = []
+        for panel in panels:
+            lc = analysis["lc"][panel]
+            fit = bkg_fits.get(panel)
+            if fit is None:
+                fit = self.fit_background(lc, signal_range, buffer=1.0, order=2)
 
-            results.append(res)
-            
-            # --------------------------------------------------
-            # SAME BINS FOR SOURCE AND BACKGROUND
-            # High-SNR bins inside the selected T90, applied to every panel.
-            # --------------------------------------------------
+            # One mask for source and background. Fall back to the whole T90
+            # when the greedy selection is empty.
             if selected_indices.size > 0:
                 mask_sig = np.zeros(lc.counts.size, dtype=bool)
                 mask_sig[selected_indices] = True
             else:
-                mask_sig = (
-                    (lc.hi_edges > tstart) &
-                    (lc.lo_edges < tstop)
-                )
+                mask_sig = _bins_overlapping(lc, t90_tstart, t90_tstop)
 
-            bin_indices = np.where(mask_sig)[0]
+            s_counts.append(np.sum(lc.counts[mask_sig]))
+            b_counts.append(np.sum(fit["bkg_counts"][mask_sig]))
 
-            # print("\n" + "=" * 80)
-            # print(f"PANEL: {p}")
-            # print(f"Signal window requested: [{tstart:.12f}, {tstop:.12f}]")
-            # print(f"Signal window duration : {tstop - tstart:.12f} s")
-            # print(f"Number of selected bins: {len(selected_indices)}")
-            # print("-" * 80)
-
-            for i in bin_indices:
-
-                lo = lc.lo_edges[i]
-                hi = lc.hi_edges[i]
-                exp = lc.exposure[i]
-
-                src_counts_bin = lc.counts[i]
-                bkg_counts_bin = res["bkg_counts"][i]
-
-            #     print(
-            #         f"bin {i:5d} | "
-            #         f"[{lo:.12f}, {hi:.12f}] | "
-            #         f"width={hi-lo:.12f} | "
-            #         f"exp={exp:.12f} | "
-            #         f"source={src_counts_bin:.6f} | "
-            #         f"background={bkg_counts_bin:.6f}"
-            #     )
-
-            # print("-" * 80)
-
-            signal_counts = np.sum(lc.counts[mask_sig])
-            background_counts = np.sum(res["bkg_counts"][mask_sig])
-
-            # print(f"TOTAL source counts     = {signal_counts:.6f}")
-            # print(f"TOTAL background counts = {background_counts:.6f}")
-
-            # if len(selected_indices) > 0:
-            #     first_bin = selected_indices[0]
-            #     last_bin = selected_indices[-1]
-
-            #     print(
-            #         f"Actual selected window  = "
-            #         f"[{lc.lo_edges[first_bin]:.12f}, "
-            #         f"{lc.hi_edges[last_bin]:.12f}]"
-            #     )
-
-            #     print(
-            #         f"Actual selected duration = "
-            #         f"{lc.hi_edges[last_bin] - lc.lo_edges[first_bin]:.12f} s"
-            #     )
-
-            # print("=" * 80)
-            s_counts.append(signal_counts)
-            b_counts.append(background_counts)
-            
             if plot:
                 self.plot_background(
                     lc,
-                    res,
+                    fit,
                     signal_range,
-                    signal_counts,
-                    background_counts,
-                    p,
+                    s_counts[-1],
+                    b_counts[-1],
+                    panel,
                     save=save_plot,
                     prefix=prefix,
-                    selected_indices=bin_indices
+                    selected_indices=np.flatnonzero(mask_sig),
                 )
-               
-                
-        # obtain numpy arrays
+
         s_counts = np.array(s_counts)
         b_counts = np.array(b_counts)
 
         if sanity_check:
-            sanity = bblocks_analysis_results.get("sanity") or {}
+            sanity = analysis.get("sanity") or {}
             sanity["s_counts"] = s_counts
             sanity["b_counts"] = b_counts
-            bblocks_analysis_results["sanity"] = sanity
-    
-        return s_counts,b_counts,event_time_start_unix,bblocks_analysis_results
+            analysis["sanity"] = sanity
+
+        return s_counts, b_counts, event_time_start_unix, analysis
