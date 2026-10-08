@@ -86,6 +86,42 @@ def _failed_analysis(lc_fallback):
     }
 
 
+# Print size for a double-column figure. Fonts stay readable after the
+# journal scales the file to the text width.
+_PAPER_FIGSIZE = (7.2, 6.9)
+_PAPER_BLUE = "#1f77b4"
+_PAPER_RED = "#d62728"
+_PAPER_T90 = "#b7e4c7"
+_PAPER_BINS = "#1b7f3b"
+
+
+def _style_paper_ax(ax):
+    """Tick and spine sizes for a figure that will be printed small."""
+    ax.tick_params(
+        axis="both",
+        which="major",
+        labelsize=7,
+        length=2.5,
+        width=0.5,
+        direction="in",
+    )
+    ax.grid(True, alpha=0.25, linewidth=0.4)
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.5)
+    ax.set_ylabel("Counts / s", fontsize=8)
+
+
+def _save_paper_figure(fig, output_dir, stem):
+    """Write a 300 dpi PNG and a vector PDF for the paper."""
+    png = f"{stem}.png"
+    pdf = f"{stem}.pdf"
+    fig.savefig(output_dir + "/" + png, dpi=300, bbox_inches="tight")
+    fig.savefig(output_dir + "/" + pdf, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {png}")
+    print(f"Saved: {pdf}")
+
+
 def _li_ma_significance(signal_lc, bkg_before, bkg_after):
     """Li & Ma significance of the on-burst window against the off-burst exposure."""
     t_on = np.sum(signal_lc.exposure)
@@ -876,42 +912,36 @@ class ACSDataAnalyzer:
 
         zoom = 5.0
 
-        fig, axes = plt.subplots(3, 2, figsize=(14, 10), sharex=True)
-        axes = axes.flatten()
+        fig, axes = plt.subplots(
+            3, 2,
+            figsize=_PAPER_FIGSIZE,
+            sharex=True,
+            gridspec_kw={"hspace": 0.38, "wspace": 0.16},
+        )
+        axes = np.atleast_1d(axes).flatten()
 
         drew_background = False
         drew_t90 = False
         drew_final_bins = False
-        drew_greedy_bins = False
 
         for ax, panel in zip(axes, panels):
             lc = acs_lc[panel]
             info = panel_snr.get(panel, {})
             res = bkg_fits.get(panel)
-            selected = panel == best_panel
+            is_best = panel == best_panel
             t = lc.centroids - t0
             t_edges = np.empty(2 * lc.lo_edges.size)
             t_edges[0::2] = lc.lo_edges - t0
             t_edges[1::2] = lc.hi_edges - t0
 
-            # Gray window, then the shared bin set, then this panel's own
-            # greedy bins as an outline. The rate is drawn on top.
             if signal_range is not None:
                 ax.axvspan(
                     signal_range[0] - t0,
                     signal_range[1] - t0,
-                    facecolor="0.85",
+                    facecolor=_PAPER_T90,
                     edgecolor="none",
                     zorder=0,
                 )
-                for edge in signal_range:
-                    ax.axvline(
-                        edge - t0,
-                        color="0.2",
-                        ls="--",
-                        lw=1.0,
-                        zorder=4,
-                    )
                 drew_t90 = True
 
             if snr_bin_selection is not None:
@@ -923,32 +953,19 @@ class ACSDataAnalyzer:
                     ax.axvspan(
                         lc.lo_edges[i] - t0,
                         lc.hi_edges[i] - t0,
-                        facecolor="#7B6FD0",
+                        facecolor=_PAPER_BINS,
                         edgecolor="none",
-                        alpha=0.28,
+                        alpha=0.45,
                         zorder=1,
                     )
                 if selected_bins.size:
                     drew_final_bins = True
 
-            ranking_bins = np.asarray(info.get("indices_time", []), dtype=int)
-            for i in ranking_bins:
-                span = ax.axvspan(
-                    lc.lo_edges[i] - t0,
-                    lc.hi_edges[i] - t0,
-                    zorder=2,
-                )
-                span.set_facecolor("none")
-                span.set_edgecolor("#E4572E")
-                span.set_hatch("///")
-                span.set_linewidth(1.1)
-            if ranking_bins.size:
-                drew_greedy_bins = True
-
             ax.plot(
                 t_edges,
                 np.repeat(lc.rates, 2),
-                color="#1f77b4",
+                color=_PAPER_BLUE,
+                lw=0.8,
                 zorder=3,
             )
 
@@ -956,7 +973,8 @@ class ACSDataAnalyzer:
                 ax.plot(
                     t,
                     res["bkg_rate"],
-                    color="red",
+                    color=_PAPER_RED,
+                    lw=0.9,
                     zorder=3,
                 )
                 drew_background = True
@@ -969,8 +987,8 @@ class ACSDataAnalyzer:
                 bin_text = "1 greedy bin"
             else:
                 bin_text = f"{n_bins} greedy bins"
-            if selected:
-                title = f"{panel} · Selected · SNR {snr:.3f} · {bin_text}"
+            if is_best:
+                title = f"{panel} · best panel · SNR {snr:.3f} · {bin_text}"
             else:
                 title = f"{panel} · SNR {snr:.3f} · {bin_text}"
 
@@ -983,54 +1001,58 @@ class ACSDataAnalyzer:
             ax.set_xlim(-zoom, zoom)
             ax.set_title(
                 title,
-                fontsize=10,
-                fontweight="bold" if selected else "regular",
+                fontsize=7.5,
+                fontweight="bold" if is_best else "regular",
+                pad=3,
             )
-            ax.set_ylabel("Counts / s")
-            ax.grid(True, alpha=0.3)
+            _style_paper_ax(ax)
 
-        legend_handles = [
-            Line2D([0], [0], color="#1f77b4", lw=1.5),
-        ]
-        legend_labels = ["Observed rate"]
+        for ax in axes[len(list(panels)):]:
+            ax.axis("off")
+
+        legend_handles = [Line2D([0], [0], color=_PAPER_BLUE, lw=1.2)]
+        legend_labels = ["Observed"]
         if drew_background:
-            legend_handles.append(Line2D([0], [0], color="red", lw=1.5))
-            legend_labels.append("Fitted background")
+            legend_handles.append(Line2D([0], [0], color=_PAPER_RED, lw=1.2))
+            legend_labels.append("Background")
         if drew_t90:
             legend_handles.append(
-                Patch(facecolor="0.85", edgecolor="0.2", linestyle="--")
+                Patch(facecolor=_PAPER_T90, edgecolor="none")
             )
-            legend_labels.append("Selected T90")
+            legend_labels.append("T90")
         if drew_final_bins:
             legend_handles.append(
-                Patch(facecolor="#7B6FD0", alpha=0.45, edgecolor="none")
+                Patch(facecolor=_PAPER_BINS, alpha=0.45, edgecolor="none")
             )
-            legend_labels.append("Bins from selected panel")
-        if drew_greedy_bins:
-            legend_handles.append(
-                Patch(facecolor="white", edgecolor="#E4572E", hatch="///")
-            )
-            legend_labels.append("Greedy bins on this panel")
+            legend_labels.append("Selected bins")
         fig.legend(
             legend_handles,
             legend_labels,
-            loc="lower center",
+            loc="upper center",
             ncol=len(legend_labels),
             frameon=False,
-            bbox_to_anchor=(0.5, 0.995),
-            fontsize=9,
+            bbox_to_anchor=(0.5, 0.955),
+            fontsize=7,
+            handlelength=1.6,
+            columnspacing=1.1,
         )
 
-        axes[-1].set_xlabel("Time - T90 center [s]")
-        axes[-2].set_xlabel("Time - T90 center [s]")
-        fig.suptitle("Panel SNR sanity check", fontsize=13, y=1.06)
-        plt.tight_layout(rect=(0, 0, 1, 0.96))
+        n_shown = len(list(panels))
+        bottom = max(0, ((n_shown - 1) // 2) * 2)
+        for ax in axes[bottom:n_shown]:
+            ax.set_xlabel("Time - T90 center [s]", fontsize=8)
+        fig.suptitle("Panel SNR sanity check", fontsize=9, y=0.985)
+        fig.subplots_adjust(
+            left=0.09, right=0.985, bottom=0.07, top=0.88,
+            hspace=0.48, wspace=0.22,
+        )
 
         if save:
-            filename = f"{prefix}_panel_snr_sanity_check.png"
-            plt.savefig(self.output_dir + "/" + filename, dpi=300, bbox_inches="tight")
-            plt.close(fig)
-            print(f"Saved: {filename}")
+            _save_paper_figure(
+                fig,
+                self.output_dir,
+                f"{prefix}_panel_snr_sanity_check",
+            )
         else:
             plt.show()
 
@@ -1095,14 +1117,32 @@ class ACSDataAnalyzer:
         """Six-panel figure of each panel's Bayesian-blocks light curve."""
 
         bb_panels = results.get("bb_panels") or {}
-        fig, axes = plt.subplots(3, 2, figsize=(14, 10), sharex=True)
-        axes = axes.flatten()
+        fig, axes = plt.subplots(
+            3, 2,
+            figsize=_PAPER_FIGSIZE,
+            sharex=True,
+            gridspec_kw={"hspace": 0.38, "wspace": 0.16},
+        )
+        axes = np.atleast_1d(axes).flatten()
+        window = 10.0
 
         for ax, panel in zip(axes, panels):
             lc = results["lc"][panel]
             info = panel_snr.get(panel, {})
             bb = bb_panels.get(panel)
-            selected = panel == best_panel
+            is_best = panel == best_panel
+            t = lc.centroids - t0
+
+            t90_start = info.get("t90_tstart", np.nan)
+            t90_stop = info.get("t90_tstop", np.nan)
+            if np.isfinite(t90_start) and np.isfinite(t90_stop):
+                ax.axvspan(
+                    t90_start - t0,
+                    t90_stop - t0,
+                    facecolor=_PAPER_T90,
+                    edgecolor="none",
+                    zorder=0,
+                )
 
             t_edges = np.empty(2 * lc.lo_edges.size)
             t_edges[0::2] = lc.lo_edges - t0
@@ -1110,8 +1150,9 @@ class ACSDataAnalyzer:
             ax.plot(
                 t_edges,
                 np.repeat(lc.rates, 2),
-                color="0.75",
-                label="Observed rate",
+                color=_PAPER_BLUE,
+                lw=0.7,
+                zorder=2,
             )
 
             if bb is not None:
@@ -1120,50 +1161,68 @@ class ACSDataAnalyzer:
                     np.append(blocks.lo_edges, blocks.hi_edges[-1]) - t0,
                     np.append(blocks.rates, blocks.rates[-1]),
                     drawstyle="steps-post",
-                    color="#1f77b4",
-                    label="Bayesian blocks",
-                )
-
-            t90_start = info.get("t90_tstart", np.nan)
-            t90_stop = info.get("t90_tstop", np.nan)
-            if np.isfinite(t90_start) and np.isfinite(t90_stop):
-                ax.axvspan(
-                    t90_start - t0,
-                    t90_stop - t0,
-                    color="olive",
-                    alpha=0.15,
-                    label="Own T90",
+                    color=_PAPER_RED,
+                    lw=1.1,
+                    zorder=3,
                 )
 
             if bb is None:
                 title = f"{panel} · Bayesian blocks failed"
-            elif selected:
-                title = f"{panel} · Selected"
+            elif is_best:
+                title = f"{panel} · best panel"
             else:
                 title = panel
 
+            in_view = (t >= -window) & (t <= window)
+            if np.any(in_view):
+                y_max = np.nanmax(lc.rates[in_view])
+                if np.isfinite(y_max) and y_max > 0:
+                    ax.set_ylim(0, 1.15 * y_max)
+
+            ax.set_xlim(-window, window)
             ax.set_title(
                 title,
-                fontweight="bold" if selected else "regular",
+                fontsize=8,
+                fontweight="bold" if is_best else "regular",
+                pad=3,
             )
-            ax.set_ylabel("Counts / s")
-            ax.grid(True, alpha=0.3)
-            ax.legend(loc="upper right", fontsize=8)
+            _style_paper_ax(ax)
 
-        axes[-1].set_xlabel("Time - common T90 center [s]")
-        axes[-2].set_xlabel("Time - common T90 center [s]")
-        fig.suptitle("Bayesian blocks by panel", fontsize=13)
-        plt.tight_layout()
+        for ax in axes[len(list(panels)):]:
+            ax.axis("off")
+
+        fig.legend(
+            [
+                Line2D([0], [0], color=_PAPER_BLUE, lw=1.2),
+                Line2D([0], [0], color=_PAPER_RED, lw=1.2),
+                Patch(facecolor=_PAPER_T90, edgecolor="none"),
+            ],
+            ["Observed", "Bayesian blocks", "T90"],
+            loc="upper center",
+            ncol=3,
+            frameon=False,
+            bbox_to_anchor=(0.5, 0.955),
+            fontsize=7,
+            handlelength=1.6,
+            columnspacing=1.1,
+        )
+
+        n_shown = len(list(panels))
+        bottom = max(0, ((n_shown - 1) // 2) * 2)
+        for ax in axes[bottom:n_shown]:
+            ax.set_xlabel("Time - common T90 center [s]", fontsize=8)
+        fig.suptitle("Bayesian blocks by panel", fontsize=9, y=0.985)
+        fig.subplots_adjust(
+            left=0.09, right=0.985, bottom=0.07, top=0.88,
+            hspace=0.48, wspace=0.22,
+        )
 
         if save:
-            filename = f"{prefix}_bayesian_blocks_sanity_check.png"
-            plt.savefig(
-                self.output_dir + "/" + filename,
-                dpi=300,
-                bbox_inches="tight",
+            _save_paper_figure(
+                fig,
+                self.output_dir,
+                f"{prefix}_bayesian_blocks_sanity_check",
             )
-            plt.close(fig)
-            print(f"Saved: {filename}")
         else:
             plt.show()
 
