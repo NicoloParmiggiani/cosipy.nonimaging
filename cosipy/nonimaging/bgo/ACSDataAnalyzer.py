@@ -93,7 +93,7 @@ def _failed_analysis(lc_fallback):
 
 # Print size for a double-column figure. Fonts stay readable after the
 # journal scales the file to the text width.
-_PAPER_FIGSIZE = (10, 15)
+_PAPER_FIGSIZE = (15, 12)
 _PAPER_BLUE = "#1f77b4"
 _PAPER_RED = "#d62728"
 _PAPER_T90 = "#b7e4c7"
