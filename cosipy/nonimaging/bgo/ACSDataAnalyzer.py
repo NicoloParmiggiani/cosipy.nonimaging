@@ -93,7 +93,7 @@ def _failed_analysis(lc_fallback):
 
 # Print size for a double-column figure. Fonts stay readable after the
 # journal scales the file to the text width.
-_PAPER_FIGSIZE = (7.2, 6.9)
+_PAPER_FIGSIZE = (15, 10)
 _PAPER_BLUE = "#1f77b4"
 _PAPER_RED = "#d62728"
 _PAPER_T90 = "#b7e4c7"
@@ -209,8 +209,9 @@ class ACSDataAnalyzer:
         SCBC -> x
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, output_dir=None):
+        """Directory for saved plots. Unused when plots are only shown."""
+        self.output_dir = output_dir
         
     def open_fits_file(self, fits_path):
         """Read bin edges and the six panel count columns from an ACS FITS file."""
