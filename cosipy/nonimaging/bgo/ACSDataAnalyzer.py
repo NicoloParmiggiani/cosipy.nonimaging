@@ -93,7 +93,7 @@ def _failed_analysis(lc_fallback):
 
 # Print size for a double-column figure. Fonts stay readable after the
 # journal scales the file to the text width.
-_PAPER_FIGSIZE = (15, 10)
+_PAPER_FIGSIZE = (10, 15)
 _PAPER_BLUE = "#1f77b4"
 _PAPER_RED = "#d62728"
 _PAPER_T90 = "#b7e4c7"
@@ -141,14 +141,21 @@ def _style_paper_ax(ax):
 
 
 def _save_paper_figure(fig, output_dir, stem):
-    """Write a 600 dpi PNG and a vector PDF for the paper."""
+    """Write a 300 dpi PNG and a vector PDF for the paper."""
     png = f"{stem}.png"
     pdf = f"{stem}.pdf"
-    fig.savefig(output_dir + "/" + png, dpi=600, bbox_inches="tight")
+    fig.savefig(output_dir + "/" + png, dpi=300, bbox_inches="tight")
     fig.savefig(output_dir + "/" + pdf, bbox_inches="tight")
-    plt.close(fig)
     print(f"Saved: {png}")
     print(f"Saved: {pdf}")
+
+
+def _finish_figure(fig, plot):
+    """Show the figure, or close it when it stays off screen."""
+    if plot:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
 def _li_ma_significance(signal_lc, bkg_before, bkg_after):
@@ -911,11 +918,14 @@ class ACSDataAnalyzer:
         self,
         results,
         save=False,
+        plot=True,
         prefix=""
     ):
         """
         Plot panel and bin-selection diagnostics from an analysis result dict.
         Requires extract_source_data_from_fits(..., sanity_check=True).
+
+        ``save`` writes the figures. ``plot`` shows them. The two are independent.
         """
 
         sanity = results.get("sanity")
@@ -1049,8 +1059,7 @@ class ACSDataAnalyzer:
                 self.output_dir,
                 f"{prefix}_panel_snr_sanity_check",
             )
-        else:
-            plt.show()
+        _finish_figure(fig, plot)
 
         self._plot_greedy_snr_by_panel(
             acs_lc,
@@ -1059,6 +1068,7 @@ class ACSDataAnalyzer:
             best_panel,
             t0,
             save=save,
+            plot=plot,
             prefix=prefix,
         )
 
@@ -1092,13 +1102,11 @@ class ACSDataAnalyzer:
                     filename = f"{prefix}_snr_cumulative_sanity_check.png"
                     plt.savefig(
                         self.output_dir + "/" + filename,
-                        dpi=600,
+                        dpi=300,
                         bbox_inches="tight"
                     )
-                    plt.close(fig2)
                     print(f"Saved: {filename}")
-                else:
-                    plt.show()
+                _finish_figure(fig2, plot)
 
         self._plot_bayesian_blocks_sanity_check(
             results,
@@ -1107,6 +1115,7 @@ class ACSDataAnalyzer:
             panel_snr,
             t0,
             save=save,
+            plot=plot,
             prefix=prefix,
         )
 
@@ -1118,6 +1127,7 @@ class ACSDataAnalyzer:
         best_panel,
         t0,
         save=False,
+        plot=True,
         prefix="",
     ):
         """Greedy SNR of each panel inside that panel's own T90."""
@@ -1244,8 +1254,7 @@ class ACSDataAnalyzer:
                 self.output_dir,
                 f"{prefix}_greedy_snr_by_panel",
             )
-        else:
-            plt.show()
+        _finish_figure(fig, plot)
 
     def _plot_bayesian_blocks_sanity_check(
         self,
@@ -1255,6 +1264,7 @@ class ACSDataAnalyzer:
         panel_snr,
         t0,
         save=False,
+        plot=True,
         prefix="",
     ):
         """Six-panel figure of each panel's Bayesian-blocks light curve."""
@@ -1366,8 +1376,7 @@ class ACSDataAnalyzer:
                 self.output_dir,
                 f"{prefix}_bayesian_blocks_sanity_check",
             )
-        else:
-            plt.show()
+        _finish_figure(fig, plot)
 
     def extract_source_data_from_fits(self, fits_path, plot=False, save_plot=False, prefix="", panels=('z1', 'z0', 'x1', 'x0', 'y1', 'y0'), p0=0.05, sanity_check=False):
         """
