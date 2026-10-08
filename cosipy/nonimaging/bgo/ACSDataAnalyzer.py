@@ -996,11 +996,13 @@ class ACSDataAnalyzer:
             res = bkg_fits.get(panel)
             selected = panel == best_panel
             t = lc.centroids - t0
+            t_edges = np.empty(2 * lc.lo_edges.size)
+            t_edges[0::2] = lc.lo_edges - t0
+            t_edges[1::2] = lc.hi_edges - t0
 
-            ax.step(
-                t,
-                lc.rates,
-                where="mid",
+            ax.plot(
+                t_edges,
+                np.repeat(lc.rates, 2),
                 color="#1f77b4",
                 label="Observed rate"
             )
