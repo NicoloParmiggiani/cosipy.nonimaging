@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from matplotlib.transforms import blended_transform_factory
 from astropy.io import fits
 from gdt.core.background.binned import Polynomial
 from gdt.core.data_primitives import TimeBins
@@ -37,29 +38,33 @@ def _empty_rank():
         "t90_tstart": np.nan,
         "t90_tstop": np.nan,
         "t90": np.nan,
+        "bkg_rate": None,
     }
 
 
-def _panel_rank(selection, tstart, tstop, t90, snr):
+def _panel_rank(selection, tstart, tstop, t90, snr, bkg_rate=None):
     """Dictionary with one panel's greedy SNR, counts, and its own T90."""
     if selection is None:
         info = _empty_rank()
         info["t90_tstart"] = float(tstart)
         info["t90_tstop"] = float(tstop)
         info["t90"] = float(t90)
-        return info
-
-    return {
-        "snr": snr,
-        "d": float(selection["d_sum"]),
-        "b": float(selection["b_sum"]),
-        "n_bins": int(selection["indices"].size),
-        "indices": np.asarray(selection["indices"], dtype=int),
-        "indices_time": np.asarray(selection["indices_time"], dtype=int),
-        "t90_tstart": float(tstart),
-        "t90_tstop": float(tstop),
-        "t90": float(t90),
-    }
+    else:
+        info = {
+            "snr": snr,
+            "d": float(selection["d_sum"]),
+            "b": float(selection["b_sum"]),
+            "n_bins": int(selection["indices"].size),
+            "indices": np.asarray(selection["indices"], dtype=int),
+            "indices_time": np.asarray(selection["indices_time"], dtype=int),
+            "t90_tstart": float(tstart),
+            "t90_tstop": float(tstop),
+            "t90": float(t90),
+            "bkg_rate": None,
+        }
+    if bkg_rate is not None:
+        info["bkg_rate"] = np.asarray(bkg_rate, dtype=float)
+    return info
 
 
 def _failed_analysis(lc_fallback):
@@ -95,6 +100,30 @@ _PAPER_T90 = "#b7e4c7"
 _PAPER_BINS = "#1b7f3b"
 
 
+def _draw_bin_bars(ax, lc, indices, t0, color, alpha=0.45):
+    """Full-height bars whose width is exactly one light-curve bin."""
+    indices = np.asarray(indices, dtype=int)
+    if indices.size == 0:
+        return False
+    lo = lc.lo_edges[indices] - t0
+    width = lc.hi_edges[indices] - lc.lo_edges[indices]
+    transform = blended_transform_factory(ax.transData, ax.transAxes)
+    ax.bar(
+        lo,
+        np.ones(lo.size),
+        width=width,
+        bottom=0.0,
+        align="edge",
+        facecolor=color,
+        edgecolor="none",
+        alpha=alpha,
+        transform=transform,
+        zorder=1,
+        clip_on=True,
+    )
+    return True
+
+
 def _style_paper_ax(ax):
     """Tick and spine sizes for a figure that will be printed small."""
     ax.tick_params(
@@ -112,10 +141,10 @@ def _style_paper_ax(ax):
 
 
 def _save_paper_figure(fig, output_dir, stem):
-    """Write a 300 dpi PNG and a vector PDF for the paper."""
+    """Write a 600 dpi PNG and a vector PDF for the paper."""
     png = f"{stem}.png"
     pdf = f"{stem}.pdf"
-    fig.savefig(output_dir + "/" + png, dpi=300, bbox_inches="tight")
+    fig.savefig(output_dir + "/" + png, dpi=600, bbox_inches="tight")
     fig.savefig(output_dir + "/" + pdf, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {png}")
@@ -353,6 +382,7 @@ class ACSDataAnalyzer:
             in_t90 = _bins_overlapping(panel_lc, tstart, tstop)
             selection = None
             snr = 0.0
+            ranking_rate = None
 
             try:
                 fit = self.fit_background(
@@ -366,6 +396,7 @@ class ACSDataAnalyzer:
                 bkg_fits[panel] = None
             else:
                 bkg_fits[panel] = fit
+                ranking_rate = fit["bkg_rate"]
                 if np.any(in_t90):
                     selection = self.select_optimal_snr_bins(
                         panel_lc.counts,
@@ -374,7 +405,9 @@ class ACSDataAnalyzer:
                     )
                     snr = selection["snr_optimal"]
 
-            panel_snr[panel] = _panel_rank(selection, tstart, tstop, t90_panel, snr)
+            panel_snr[panel] = _panel_rank(
+                selection, tstart, tstop, t90_panel, snr, ranking_rate
+            )
             if selection is not None and snr > best_snr:
                 best_snr = snr
                 best_panel = panel
@@ -921,12 +954,14 @@ class ACSDataAnalyzer:
         axes = np.atleast_1d(axes).flatten()
 
         drew_background = False
-        drew_t90 = False
         drew_final_bins = False
+        selected_bins = np.asarray(
+            (snr_bin_selection or {}).get("indices_time", []),
+            dtype=int,
+        )
 
         for ax, panel in zip(axes, panels):
             lc = acs_lc[panel]
-            info = panel_snr.get(panel, {})
             res = bkg_fits.get(panel)
             is_best = panel == best_panel
             t = lc.centroids - t0
@@ -934,32 +969,8 @@ class ACSDataAnalyzer:
             t_edges[0::2] = lc.lo_edges - t0
             t_edges[1::2] = lc.hi_edges - t0
 
-            if signal_range is not None:
-                ax.axvspan(
-                    signal_range[0] - t0,
-                    signal_range[1] - t0,
-                    facecolor=_PAPER_T90,
-                    edgecolor="none",
-                    zorder=0,
-                )
-                drew_t90 = True
-
-            if snr_bin_selection is not None:
-                selected_bins = np.asarray(
-                    snr_bin_selection.get("indices_time", []),
-                    dtype=int,
-                )
-                for i in selected_bins:
-                    ax.axvspan(
-                        lc.lo_edges[i] - t0,
-                        lc.hi_edges[i] - t0,
-                        facecolor=_PAPER_BINS,
-                        edgecolor="none",
-                        alpha=0.45,
-                        zorder=1,
-                    )
-                if selected_bins.size:
-                    drew_final_bins = True
+            if _draw_bin_bars(ax, lc, selected_bins, t0, _PAPER_BINS):
+                drew_final_bins = True
 
             ax.plot(
                 t_edges,
@@ -977,6 +988,187 @@ class ACSDataAnalyzer:
                     lw=0.9,
                     zorder=3,
                 )
+                drew_background = True
+
+            title = f"{panel} · best panel" if is_best else panel
+
+            in_view = (t >= -zoom) & (t <= zoom)
+            if np.any(in_view):
+                y_max = np.nanmax(lc.rates[in_view])
+                if np.isfinite(y_max) and y_max > 0:
+                    ax.set_ylim(0, 1.15 * y_max)
+
+            ax.set_xlim(-zoom, zoom)
+            ax.set_title(
+                title,
+                fontsize=7.5,
+                fontweight="bold" if is_best else "regular",
+                pad=3,
+            )
+            _style_paper_ax(ax)
+
+        for ax in axes[len(list(panels)):]:
+            ax.axis("off")
+
+        legend_handles = [Line2D([0], [0], color=_PAPER_BLUE, lw=1.2)]
+        legend_labels = ["Observed"]
+        if drew_background:
+            legend_handles.append(Line2D([0], [0], color=_PAPER_RED, lw=1.2))
+            legend_labels.append("Background")
+        if drew_final_bins:
+            legend_handles.append(
+                Patch(facecolor=_PAPER_BINS, alpha=0.45, edgecolor="none")
+            )
+            legend_labels.append("Selected bins")
+        fig.legend(
+            legend_handles,
+            legend_labels,
+            loc="upper center",
+            ncol=len(legend_labels),
+            frameon=False,
+            bbox_to_anchor=(0.5, 0.955),
+            fontsize=7,
+            handlelength=1.6,
+            columnspacing=1.1,
+        )
+
+        n_shown = len(list(panels))
+        bottom = max(0, ((n_shown - 1) // 2) * 2)
+        for ax in axes[bottom:n_shown]:
+            ax.set_xlabel("Time - T90 center [s]", fontsize=8)
+        fig.suptitle("Panel SNR sanity check", fontsize=9, y=0.985)
+        fig.subplots_adjust(
+            left=0.09, right=0.985, bottom=0.07, top=0.88,
+            hspace=0.48, wspace=0.22,
+        )
+
+        if save:
+            _save_paper_figure(
+                fig,
+                self.output_dir,
+                f"{prefix}_panel_snr_sanity_check",
+            )
+        else:
+            plt.show()
+
+        self._plot_greedy_snr_by_panel(
+            acs_lc,
+            panel_snr,
+            panels,
+            best_panel,
+            t0,
+            save=save,
+            prefix=prefix,
+        )
+
+        if snr_bin_selection is not None:
+            hist = snr_bin_selection.get("snr_cumulative", np.array([]))
+            if hist.size > 0:
+                fig2, ax2 = plt.subplots(figsize=(8, 4))
+                ax2.plot(
+                    np.arange(1, hist.size + 1),
+                    hist,
+                    marker="o",
+                    color="#1f77b4"
+                )
+                ax2.axhline(
+                    snr_bin_selection["snr_optimal"],
+                    color="green",
+                    ls="--",
+                    label=f"Optimal SNR={snr_bin_selection['snr_optimal']:.4f}"
+                )
+                ax2.set_xlabel("Bins added (decreasing per-bin SNR)")
+                ax2.set_ylabel("Cumulative SNR")
+                ax2.set_title(
+                    f"Greedy SNR selection on {best_panel} "
+                    f"({hist.size} bins)"
+                )
+                ax2.grid(True, alpha=0.3)
+                ax2.legend()
+                fig2.tight_layout()
+
+                if save:
+                    filename = f"{prefix}_snr_cumulative_sanity_check.png"
+                    plt.savefig(
+                        self.output_dir + "/" + filename,
+                        dpi=600,
+                        bbox_inches="tight"
+                    )
+                    plt.close(fig2)
+                    print(f"Saved: {filename}")
+                else:
+                    plt.show()
+
+        self._plot_bayesian_blocks_sanity_check(
+            results,
+            panels,
+            best_panel,
+            panel_snr,
+            t0,
+            save=save,
+            prefix=prefix,
+        )
+
+    def _plot_greedy_snr_by_panel(
+        self,
+        acs_lc,
+        panel_snr,
+        panels,
+        best_panel,
+        t0,
+        save=False,
+        prefix="",
+    ):
+        """Greedy SNR of each panel inside that panel's own T90."""
+
+        fig, axes = plt.subplots(
+            3, 2,
+            figsize=_PAPER_FIGSIZE,
+            sharex=True,
+            gridspec_kw={"hspace": 0.38, "wspace": 0.16},
+        )
+        axes = np.atleast_1d(axes).flatten()
+        zoom = 5.0
+        drew_background = False
+        drew_t90 = False
+        drew_greedy = False
+
+        for ax, panel in zip(axes, panels):
+            lc = acs_lc[panel]
+            info = panel_snr.get(panel, {})
+            is_best = panel == best_panel
+            t90_start = info.get("t90_tstart", np.nan)
+            t90_stop = info.get("t90_tstop", np.nan)
+            if np.isfinite(t90_start) and np.isfinite(t90_stop):
+                ax.axvspan(
+                    t90_start - t0,
+                    t90_stop - t0,
+                    facecolor=_PAPER_T90,
+                    edgecolor="none",
+                    zorder=0,
+                )
+                drew_t90 = True
+
+            t = lc.centroids - t0
+            if _draw_bin_bars(
+                ax, lc, info.get("indices_time", []), t0, _PAPER_BINS
+            ):
+                drew_greedy = True
+
+            t_edges = np.empty(2 * lc.lo_edges.size)
+            t_edges[0::2] = lc.lo_edges - t0
+            t_edges[1::2] = lc.hi_edges - t0
+            ax.plot(
+                t_edges,
+                np.repeat(lc.rates, 2),
+                color=_PAPER_BLUE,
+                lw=0.8,
+                zorder=3,
+            )
+
+            bkg_rate = info.get("bkg_rate")
+            if bkg_rate is not None:
+                ax.plot(t, bkg_rate, color=_PAPER_RED, lw=0.9, zorder=3)
                 drew_background = True
 
             snr = info.get("snr", np.nan)
@@ -1016,15 +1208,13 @@ class ACSDataAnalyzer:
             legend_handles.append(Line2D([0], [0], color=_PAPER_RED, lw=1.2))
             legend_labels.append("Background")
         if drew_t90:
-            legend_handles.append(
-                Patch(facecolor=_PAPER_T90, edgecolor="none")
-            )
+            legend_handles.append(Patch(facecolor=_PAPER_T90, edgecolor="none"))
             legend_labels.append("T90")
-        if drew_final_bins:
+        if drew_greedy:
             legend_handles.append(
                 Patch(facecolor=_PAPER_BINS, alpha=0.45, edgecolor="none")
             )
-            legend_labels.append("Selected bins")
+            legend_labels.append("Greedy bins")
         fig.legend(
             legend_handles,
             legend_labels,
@@ -1041,7 +1231,7 @@ class ACSDataAnalyzer:
         bottom = max(0, ((n_shown - 1) // 2) * 2)
         for ax in axes[bottom:n_shown]:
             ax.set_xlabel("Time - T90 center [s]", fontsize=8)
-        fig.suptitle("Panel SNR sanity check", fontsize=9, y=0.985)
+        fig.suptitle("Greedy SNR in each panel T90", fontsize=9, y=0.985)
         fig.subplots_adjust(
             left=0.09, right=0.985, bottom=0.07, top=0.88,
             hspace=0.48, wspace=0.22,
@@ -1051,58 +1241,10 @@ class ACSDataAnalyzer:
             _save_paper_figure(
                 fig,
                 self.output_dir,
-                f"{prefix}_panel_snr_sanity_check",
+                f"{prefix}_greedy_snr_by_panel",
             )
         else:
             plt.show()
-
-        if snr_bin_selection is not None:
-            hist = snr_bin_selection.get("snr_cumulative", np.array([]))
-            if hist.size > 0:
-                fig2, ax2 = plt.subplots(figsize=(8, 4))
-                ax2.plot(
-                    np.arange(1, hist.size + 1),
-                    hist,
-                    marker="o",
-                    color="#1f77b4"
-                )
-                ax2.axhline(
-                    snr_bin_selection["snr_optimal"],
-                    color="green",
-                    ls="--",
-                    label=f"Optimal SNR={snr_bin_selection['snr_optimal']:.4f}"
-                )
-                ax2.set_xlabel("Bins added (decreasing per-bin SNR)")
-                ax2.set_ylabel("Cumulative SNR")
-                ax2.set_title(
-                    f"Greedy SNR selection on {best_panel} "
-                    f"({hist.size} bins)"
-                )
-                ax2.grid(True, alpha=0.3)
-                ax2.legend()
-                fig2.tight_layout()
-
-                if save:
-                    filename = f"{prefix}_snr_cumulative_sanity_check.png"
-                    plt.savefig(
-                        self.output_dir + "/" + filename,
-                        dpi=300,
-                        bbox_inches="tight"
-                    )
-                    plt.close(fig2)
-                    print(f"Saved: {filename}")
-                else:
-                    plt.show()
-
-        self._plot_bayesian_blocks_sanity_check(
-            results,
-            panels,
-            best_panel,
-            panel_snr,
-            t0,
-            save=save,
-            prefix=prefix,
-        )
 
     def _plot_bayesian_blocks_sanity_check(
         self,
@@ -1162,7 +1304,7 @@ class ACSDataAnalyzer:
                     np.append(blocks.rates, blocks.rates[-1]),
                     drawstyle="steps-post",
                     color=_PAPER_RED,
-                    lw=1.1,
+                    lw=0.75,
                     zorder=3,
                 )
 
