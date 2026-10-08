@@ -1,4 +1,6 @@
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from astropy.io import fits
 from gdt.core.background.binned import Polynomial
 from gdt.core.data_primitives import TimeBins
@@ -877,6 +879,11 @@ class ACSDataAnalyzer:
         fig, axes = plt.subplots(3, 2, figsize=(14, 10), sharex=True)
         axes = axes.flatten()
 
+        drew_background = False
+        drew_t90 = False
+        drew_final_bins = False
+        drew_greedy_bins = False
+
         for ax, panel in zip(axes, panels):
             lc = acs_lc[panel]
             info = panel_snr.get(panel, {})
@@ -887,11 +894,62 @@ class ACSDataAnalyzer:
             t_edges[0::2] = lc.lo_edges - t0
             t_edges[1::2] = lc.hi_edges - t0
 
+            # Gray window, then the shared bin set, then this panel's own
+            # greedy bins as an outline. The rate is drawn on top.
+            if signal_range is not None:
+                ax.axvspan(
+                    signal_range[0] - t0,
+                    signal_range[1] - t0,
+                    facecolor="0.85",
+                    edgecolor="none",
+                    zorder=0,
+                )
+                for edge in signal_range:
+                    ax.axvline(
+                        edge - t0,
+                        color="0.2",
+                        ls="--",
+                        lw=1.0,
+                        zorder=4,
+                    )
+                drew_t90 = True
+
+            if snr_bin_selection is not None:
+                selected_bins = np.asarray(
+                    snr_bin_selection.get("indices_time", []),
+                    dtype=int,
+                )
+                for i in selected_bins:
+                    ax.axvspan(
+                        lc.lo_edges[i] - t0,
+                        lc.hi_edges[i] - t0,
+                        facecolor="#7B6FD0",
+                        edgecolor="none",
+                        alpha=0.28,
+                        zorder=1,
+                    )
+                if selected_bins.size:
+                    drew_final_bins = True
+
+            ranking_bins = np.asarray(info.get("indices_time", []), dtype=int)
+            for i in ranking_bins:
+                span = ax.axvspan(
+                    lc.lo_edges[i] - t0,
+                    lc.hi_edges[i] - t0,
+                    zorder=2,
+                )
+                span.set_facecolor("none")
+                span.set_edgecolor("#E4572E")
+                span.set_hatch("///")
+                span.set_linewidth(1.1)
+            if ranking_bins.size:
+                drew_greedy_bins = True
+
             ax.plot(
                 t_edges,
                 np.repeat(lc.rates, 2),
                 color="#1f77b4",
-                label="Observed rate"
+                zorder=3,
             )
 
             if res is not None:
@@ -899,47 +957,22 @@ class ACSDataAnalyzer:
                     t,
                     res["bkg_rate"],
                     color="red",
-                    label="Fitted background"
+                    zorder=3,
                 )
-
-            if signal_range is not None:
-                ax.axvspan(
-                    signal_range[0] - t0,
-                    signal_range[1] - t0,
-                    color="olive",
-                    alpha=0.12,
-                    label="T90 window"
-                )
-
-            ranking_bins = np.asarray(info.get("indices_time", []), dtype=int)
-            for k, i in enumerate(ranking_bins):
-                ax.axvspan(
-                    lc.lo_edges[i] - t0,
-                    lc.hi_edges[i] - t0,
-                    color="orange",
-                    alpha=0.35,
-                    label="Own-T90 greedy bins" if k == 0 else None
-                )
-
-            if snr_bin_selection is not None:
-                selected_bins = snr_bin_selection.get("indices_time", [])
-                for k, i in enumerate(selected_bins):
-                    ax.axvspan(
-                        lc.lo_edges[i] - t0,
-                        lc.hi_edges[i] - t0,
-                        color="green",
-                        alpha=0.28,
-                        label="Final bins inside selected T90" if k == 0 else None
-                    )
+                drew_background = True
 
             snr = info.get("snr", np.nan)
             n_bins = int(info.get("n_bins", 0))
-            title = f"{panel} | greedy SNR={snr:.3f} | bins={n_bins}"
+            if n_bins == 0:
+                bin_text = "no greedy bins"
+            elif n_bins == 1:
+                bin_text = "1 greedy bin"
+            else:
+                bin_text = f"{n_bins} greedy bins"
             if selected:
-                title = f"SELECTED  {title}"
-                for spine in ax.spines.values():
-                    spine.set_color("darkorange")
-                    spine.set_linewidth(2.5)
+                title = f"{panel} · Selected · SNR {snr:.3f} · {bin_text}"
+            else:
+                title = f"{panel} · SNR {snr:.3f} · {bin_text}"
 
             in_view = (t >= -zoom) & (t <= zoom)
             if np.any(in_view):
@@ -948,18 +981,50 @@ class ACSDataAnalyzer:
                     ax.set_ylim(0, 1.15 * y_max)
 
             ax.set_xlim(-zoom, zoom)
-            ax.set_title(title)
+            ax.set_title(
+                title,
+                fontsize=10,
+                fontweight="bold" if selected else "regular",
+            )
             ax.set_ylabel("Counts / s")
             ax.grid(True, alpha=0.3)
-            ax.legend(loc="upper right", fontsize=8)
+
+        legend_handles = [
+            Line2D([0], [0], color="#1f77b4", lw=1.5),
+        ]
+        legend_labels = ["Observed rate"]
+        if drew_background:
+            legend_handles.append(Line2D([0], [0], color="red", lw=1.5))
+            legend_labels.append("Fitted background")
+        if drew_t90:
+            legend_handles.append(
+                Patch(facecolor="0.85", edgecolor="0.2", linestyle="--")
+            )
+            legend_labels.append("Selected T90")
+        if drew_final_bins:
+            legend_handles.append(
+                Patch(facecolor="#7B6FD0", alpha=0.45, edgecolor="none")
+            )
+            legend_labels.append("Bins from selected panel")
+        if drew_greedy_bins:
+            legend_handles.append(
+                Patch(facecolor="white", edgecolor="#E4572E", hatch="///")
+            )
+            legend_labels.append("Greedy bins on this panel")
+        fig.legend(
+            legend_handles,
+            legend_labels,
+            loc="lower center",
+            ncol=len(legend_labels),
+            frameon=False,
+            bbox_to_anchor=(0.5, 0.995),
+            fontsize=9,
+        )
 
         axes[-1].set_xlabel("Time - T90 center [s]")
         axes[-2].set_xlabel("Time - T90 center [s]")
-        fig.suptitle(
-            f"Panel SNR sanity check | selected={best_panel}",
-            fontsize=13
-        )
-        plt.tight_layout()
+        fig.suptitle("Panel SNR sanity check", fontsize=13, y=1.06)
+        plt.tight_layout(rect=(0, 0, 1, 0.96))
 
         if save:
             filename = f"{prefix}_panel_snr_sanity_check.png"
@@ -1070,24 +1135,24 @@ class ACSDataAnalyzer:
                     label="Own T90",
                 )
 
-            title = panel if bb is not None else f"{panel} | Bayesian blocks failed"
-            if selected:
-                title = f"SELECTED  {title}"
-                for spine in ax.spines.values():
-                    spine.set_color("darkorange")
-                    spine.set_linewidth(2.5)
+            if bb is None:
+                title = f"{panel} · Bayesian blocks failed"
+            elif selected:
+                title = f"{panel} · Selected"
+            else:
+                title = panel
 
-            ax.set_title(title)
+            ax.set_title(
+                title,
+                fontweight="bold" if selected else "regular",
+            )
             ax.set_ylabel("Counts / s")
             ax.grid(True, alpha=0.3)
             ax.legend(loc="upper right", fontsize=8)
 
         axes[-1].set_xlabel("Time - common T90 center [s]")
         axes[-2].set_xlabel("Time - common T90 center [s]")
-        fig.suptitle(
-            f"Bayesian blocks by panel | selected={best_panel}",
-            fontsize=13,
-        )
+        fig.suptitle("Bayesian blocks by panel", fontsize=13)
         plt.tight_layout()
 
         if save:
