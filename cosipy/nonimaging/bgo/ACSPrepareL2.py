@@ -22,7 +22,7 @@ class ACSPrepareL2:
 
     def read_event_list_csv(self, csv_path):
         """
-        Read the GRB event list from a CSV file.
+        Read the GRB event list from a whitespace-separated file.
         """
 
         columns = [
@@ -34,8 +34,12 @@ class ACSPrepareL2:
             "Peak_photon_flux_10_10000",
             "Peak_energy_flux_10_10000",
             "Peak_photon_flux_80_2000",
+            "Peak_photon_flux_50_300",
+            "Peak_photon_flux_10_1000",
             "Zenith",
             "Azimuth",
+            "Galactic_latitude",
+            "Galactic_longitude",
             "Spectral_model",
             "Spectral_parameters"
         ]
@@ -45,11 +49,12 @@ class ACSPrepareL2:
             sep=r'\s+(?![^\[]*\])',
             engine="python",
             names=columns,
-            skiprows=1
+            skiprows=1,
+            index_col=False
         )
 
         return df
-
+    
     def raed_acs_lc_from_hdf5(
         self,
         hdf5_path,
