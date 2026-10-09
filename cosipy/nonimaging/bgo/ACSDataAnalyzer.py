@@ -203,7 +203,6 @@ _PAPER_FIGSIZE = (15, 12)
 _PAPER_BLUE = "#1f77b4"
 _PAPER_RED = "#d62728"
 _PAPER_T90 = "#b7e4c7"
-_PAPER_SIGNAL = "#f3e5ab"
 _PAPER_BINS = "#1b7f3b"
 
 
@@ -298,12 +297,8 @@ def _summed_time_view(results):
     return t0, half, t90_start, t90_stop, bb_start, bb_stop
 
 
-def _draw_t90_and_signal(ax, t0, t90_start, t90_stop, bb_start, bb_stop):
-    """Pale band for the Bayesian-blocks signal, green band for the T90."""
-    ax.axvspan(
-        bb_start - t0, bb_stop - t0,
-        facecolor=_PAPER_SIGNAL, edgecolor="none", zorder=0,
-    )
+def _draw_t90_and_signal(ax, t0, t90_start, t90_stop, _bb_start, _bb_stop):
+    """Green band for the T90. Signal edges are drawn only on the blocks plot."""
     ax.axvspan(
         t90_start - t0, t90_stop - t0,
         facecolor=_PAPER_T90, edgecolor="none", zorder=0,
@@ -2043,10 +2038,9 @@ class ACSDataAnalyzer:
             fig,
             [
                 Line2D([0], [0], color=_PAPER_BLUE, lw=1.2),
-                Patch(facecolor=_PAPER_SIGNAL, edgecolor="none"),
                 Patch(facecolor=_PAPER_T90, edgecolor="none"),
             ],
-            ["Observed", "Signal window", "T90"],
+            ["Observed", "T90"],
         )
         _label_bottom_axes(axes, len(panels), "Time - T90 center [s]")
         fig.suptitle("Panel light curves", fontsize=9, y=0.985)
@@ -2130,11 +2124,10 @@ class ACSDataAnalyzer:
             [
                 Line2D([0], [0], color=_PAPER_BLUE, lw=1.2),
                 Line2D([0], [0], color=_PAPER_RED, lw=1.2),
-                Patch(facecolor=_PAPER_SIGNAL, edgecolor="none"),
                 Patch(facecolor=_PAPER_T90, edgecolor="none"),
                 Patch(facecolor=_PAPER_BINS, alpha=0.45, edgecolor="none"),
             ],
-            ["Summed counts", "Summed background", "Signal window", "T90", "Selected bins"],
+            ["Summed counts", "Summed background", "T90", "Selected bins"],
         )
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
@@ -2179,11 +2172,10 @@ class ACSDataAnalyzer:
             [
                 Line2D([0], [0], color=_PAPER_BLUE, lw=1.2),
                 Line2D([0], [0], color=_PAPER_RED, lw=1.2),
-                Patch(facecolor=_PAPER_SIGNAL, edgecolor="none"),
                 Patch(facecolor=_PAPER_T90, edgecolor="none"),
                 Patch(facecolor=_PAPER_BINS, alpha=0.45, edgecolor="none"),
             ],
-            ["Observed", "Background", "Signal window", "T90", "Selected bins"],
+            ["Observed", "Background", "T90", "Selected bins"],
         )
         _label_bottom_axes(axes, len(panels), "Time - T90 center [s]")
         fig.suptitle("Selected bins on each panel", fontsize=9, y=0.985)
