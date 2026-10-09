@@ -20,9 +20,98 @@ _PANEL_COLUMNS = {
 }
 
 
+# TT seconds of 2025-01-01 00:00:00.184 UTC. ACS TIME is seconds since then.
+_ACS_TIME_UNIX_EPOCH = 1735689600.184
+
+_DEFAULT_PANELS = ("z1", "z0", "x1", "x0", "y1", "y0")
+
+# How the summed pipeline chooses the bins that enter the localization.
+#   t90            every bin inside the T90
+#   snr_threshold  bins inside the Bayesian-blocks signal window with SNR
+#                  above the given threshold
+#   greedy         same signal window, added by decreasing SNR while the
+#                  cumulative SNR grows
+_SUMMED_BIN_METHODS = ("t90", "snr_threshold", "greedy")
+
+
 def _bins_overlapping(lc, tstart, tstop):
     """Light-curve bins whose interval overlaps [tstart, tstop]."""
     return (lc.hi_edges > tstart) & (lc.lo_edges < tstop)
+
+
+def _build_panel_light_curves(lightcurve, panels, is_rate=False):
+    """TimeBins for each requested panel. All panels share one time grid."""
+    t_min = np.asarray(lightcurve["t_min"])
+    t_max = np.asarray(lightcurve["t_max"])
+    exposure = t_max - t_min
+    raw = lightcurve["panels"]
+    counts = {
+        name: np.asarray(raw[column])
+        for name, column in _PANEL_COLUMNS.items()
+    }
+    if is_rate:
+        counts = {name: values * exposure for name, values in counts.items()}
+
+    light_curves = {
+        panel: TimeBins(counts[panel], t_min, t_max, exposure)
+        for panel in panels
+    }
+    return t_min, t_max, light_curves
+
+
+def _bayesian_blocks_t90(light_curve, p0):
+    """Bayesian Blocks, T90 and the quantile window of one light curve."""
+    blocks = BayesianBlocksLightcurve(light_curve)
+    blocks.compute_bayesian_blocks(p0=p0)
+    t90 = blocks.duration(quantile=.9)
+    t90_error = blocks.duration_error(.9, nsamples=100)
+    tstart, tstop = blocks.quantile_range(quantile=.9)
+    return blocks, t90, t90_error, tstart, tstop
+
+
+def _sum_counts(light_curves, panels):
+    """Sum the observed counts of every panel, bin by bin."""
+    n_bins = light_curves[panels[0]].counts.size
+    total = np.zeros(n_bins, dtype=float)
+    for panel in panels:
+        total += np.asarray(light_curves[panel].counts, dtype=float)
+    return total
+
+
+def _selection_mask(n_bins, selected_indices, lc, tstart, tstop, fallback_to_window):
+    """Bins used to sum counts. An empty selection can fall back to the T90."""
+    selected_indices = np.asarray(selected_indices, dtype=int)
+    if selected_indices.size > 0:
+        mask = np.zeros(n_bins, dtype=bool)
+        mask[selected_indices] = True
+        return mask
+    if fallback_to_window:
+        return _bins_overlapping(lc, tstart, tstop)
+    return np.zeros(n_bins, dtype=bool)
+
+
+def _selection_from_indices(indices, counts, bkg_counts, bin_snr):
+    """Pack a bin list the same way the greedy selector does."""
+    indices = np.asarray(indices, dtype=int)
+    indices_time = np.sort(indices)
+    if indices_time.size:
+        d_sum = float(np.sum(counts[indices_time]))
+        b_sum = float(np.sum(bkg_counts[indices_time]))
+        snr = ACSDataAnalyzer.counts_snr(d_sum, b_sum)
+    else:
+        d_sum = 0.0
+        b_sum = 0.0
+        snr = 0.0
+    return {
+        "indices": indices,
+        "indices_time": indices_time,
+        "order": indices_time,
+        "bin_snr": bin_snr,
+        "snr_cumulative": np.asarray([], dtype=float),
+        "snr_optimal": float(snr),
+        "d_sum": d_sum,
+        "b_sum": b_sum,
+    }
 
 
 def _empty_rank():
@@ -91,12 +180,30 @@ def _failed_analysis(lc_fallback):
     }
 
 
+def _failed_summed_analysis(lc_fallback, bin_method):
+    """Sentinel result when the summed light curve has no T90."""
+    failed = _failed_analysis(lc_fallback)
+    failed["pipeline"] = "summed"
+    failed["bin_method"] = bin_method
+    failed["lc_sum"] = None
+    failed["d"] = None
+    failed["b"] = None
+    failed["bin_snr"] = None
+    failed["bkg_rate_sum"] = None
+    failed["s_counts"] = None
+    failed["b_counts"] = None
+    failed["panels"] = []
+    failed["snr_threshold"] = None
+    return failed
+
+
 # Print size for a double-column figure. Fonts stay readable after the
 # journal scales the file to the text width.
 _PAPER_FIGSIZE = (15, 12)
 _PAPER_BLUE = "#1f77b4"
 _PAPER_RED = "#d62728"
 _PAPER_T90 = "#b7e4c7"
+_PAPER_SIGNAL = "#f3e5ab"
 _PAPER_BINS = "#1b7f3b"
 
 
@@ -158,6 +265,88 @@ def _finish_figure(fig, plot):
         plt.close(fig)
 
 
+def _rate_steps(lc, t0):
+    """Time edges and rates for a step plot, shifted so t0 is zero."""
+    t_edges = np.empty(2 * lc.lo_edges.size)
+    t_edges[0::2] = lc.lo_edges - t0
+    t_edges[1::2] = lc.hi_edges - t0
+    return t_edges, np.repeat(lc.rates, 2)
+
+
+def _t90_view(tstart, tstop):
+    """Plot center and half-width that keep the T90 window on screen."""
+    t0 = 0.5 * (float(tstart) + float(tstop))
+    half = 0.5 * (float(tstop) - float(tstart)) + 2.0
+    if half < 5.0:
+        half = 5.0
+    return t0, half
+
+
+def _summed_time_view(results):
+    """T90 center and a half-width that also covers the signal window."""
+    t90_start = float(results["signal_tstart"])
+    t90_stop = float(results["signal_tstop"])
+    bb_start = float(results.get("bb_signal_tstart", t90_start))
+    bb_stop = float(results.get("bb_signal_tstop", t90_stop))
+    t0 = 0.5 * (t90_start + t90_stop)
+    half = max(
+        5.0,
+        0.5 * (t90_stop - t90_start) + 2.0,
+        abs(bb_start - t0) + 2.0,
+        abs(bb_stop - t0) + 2.0,
+    )
+    return t0, half, t90_start, t90_stop, bb_start, bb_stop
+
+
+def _draw_t90_and_signal(ax, t0, t90_start, t90_stop, bb_start, bb_stop):
+    """Pale band for the Bayesian-blocks signal, green band for the T90."""
+    ax.axvspan(
+        bb_start - t0, bb_stop - t0,
+        facecolor=_PAPER_SIGNAL, edgecolor="none", zorder=0,
+    )
+    ax.axvspan(
+        t90_start - t0, t90_stop - t0,
+        facecolor=_PAPER_T90, edgecolor="none", zorder=0,
+    )
+
+
+def _zoom_ylim(ax, t, rates, half, extra_rates=None):
+    """Y limits from the data inside the plotted time window."""
+    in_view = (t >= -half) & (t <= half)
+    if not np.any(in_view):
+        ax.set_xlim(-half, half)
+        return
+    chunks = [np.asarray(rates, dtype=float)[in_view]]
+    if extra_rates is not None:
+        chunks.append(np.asarray(extra_rates, dtype=float)[in_view])
+    y_max = np.nanmax(np.concatenate(chunks))
+    if np.isfinite(y_max) and y_max > 0:
+        ax.set_ylim(0, 1.15 * y_max)
+    ax.set_xlim(-half, half)
+
+
+def _paper_legend(fig, handles, labels):
+    """One legend above a multi-panel figure."""
+    fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        ncol=len(labels),
+        frameon=False,
+        bbox_to_anchor=(0.5, 0.955),
+        fontsize=7,
+        handlelength=1.6,
+        columnspacing=1.1,
+    )
+
+
+def _label_bottom_axes(axes, n_shown, text):
+    """X label on the last row of a 2-column panel grid."""
+    bottom = max(0, ((n_shown - 1) // 2) * 2)
+    for ax in axes[bottom:n_shown]:
+        ax.set_xlabel(text, fontsize=8)
+
+
 def _li_ma_significance(signal_lc, bkg_before, bkg_after):
     """Li & Ma significance of the on-burst window against the off-burst exposure."""
     t_on = np.sum(signal_lc.exposure)
@@ -197,8 +386,10 @@ class ACSDataAnalyzer:
     Main features
     -------------
     - FITS data extraction
-    - Automatic best-panel selection
-    - Bayesian Blocks segmentation
+    - Per-panel pipeline: each panel has its own T90, and the best panel
+      chooses the bins (``extract_source_data_from_fits``)
+    - Summed pipeline: one T90 from the sum of the panels, then one of
+      three bin selections (``extract_source_data_summed_from_fits``)
     - Background estimation
     - Signal/background count extraction
     - Visualization utilities
@@ -337,33 +528,9 @@ class ACSDataAnalyzer:
                 }
         """
 
-        # Bin widths are not uniform: 1 s, 250 ms and 50 ms.
-        t_min = np.asarray(lightcurve["t_min"])
-        t_max = np.asarray(lightcurve["t_max"])
-        exposure = t_max - t_min
-
-        raw = lightcurve["panels"]
-        counts = {
-            name: np.asarray(raw[column])
-            for name, column in _PANEL_COLUMNS.items()
-        }
-        if isRate:
-            counts = {name: values * exposure for name, values in counts.items()}
-
-        lc = {
-            panel: TimeBins(counts[panel], t_min, t_max, exposure)
-            for panel in panels
-        }
-
         # Each panel is ranked inside its own T90. The winner's T90
         # becomes the common window used for the final counts.
-        def t90_of(panel_lc):
-            bb = BayesianBlocksLightcurve(panel_lc)
-            bb.compute_bayesian_blocks(p0=p0)
-            t90_val = bb.duration(quantile=.9)
-            t90_err = bb.duration_error(.9, nsamples=100)
-            tstart, tstop = bb.quantile_range(quantile=.9)
-            return bb, t90_val, t90_err, tstart, tstop
+        t_min, t_max, lc = _build_panel_light_curves(lightcurve, panels, isRate)
 
         bb_by_panel = {}
         bb_panels = {}
@@ -375,7 +542,9 @@ class ACSDataAnalyzer:
         for panel in panels:
             panel_lc = lc[panel]
             try:
-                bb_panel, t90_panel, t90_err_panel, tstart, tstop = t90_of(panel_lc)
+                bb_panel, t90_panel, t90_err_panel, tstart, tstop = _bayesian_blocks_t90(
+                    panel_lc, p0
+                )
             except Exception as exc:
                 print(exc)
                 print(f"WARNING: Bayesian blocks failed on {panel}")
@@ -611,6 +780,81 @@ class ACSDataAnalyzer:
             "d_sum": float(d_sum),
             "b_sum": float(b_sum),
         }
+
+    def select_bins_by_method(self, method, counts, bkg_counts, in_window, snr_threshold=3.5):
+        """
+        Choose localization bins on a summed light curve.
+
+        ``in_window`` is the T90 for ``"t90"`` and the full Bayesian-blocks
+        signal window for ``"snr_threshold"`` and ``"greedy"``.
+
+        ``method`` is one of:
+            - "t90": every bin inside the window
+            - "snr_threshold": bins inside the window with SNR above ``snr_threshold``
+            - "greedy": bins inside the window added by decreasing SNR
+              until the cumulative SNR decreases
+        """
+        if method not in _SUMMED_BIN_METHODS:
+            names = ", ".join(_SUMMED_BIN_METHODS)
+            raise ValueError(f"bin_method must be one of: {names}")
+
+        counts = np.asarray(counts, dtype=float)
+        bkg_counts = np.asarray(bkg_counts, dtype=float)
+        in_window = np.asarray(in_window, dtype=bool)
+        bin_snr = self.counts_snr(counts, bkg_counts)
+
+        if method == "greedy":
+            selection = self.select_optimal_snr_bins(counts, bkg_counts, mask=in_window)
+        elif method == "t90":
+            selection = _selection_from_indices(
+                np.flatnonzero(in_window), counts, bkg_counts, bin_snr
+            )
+        else:
+            above = in_window & (bin_snr > snr_threshold)
+            indices = np.flatnonzero(above)
+            if indices.size:
+                indices = indices[np.argsort(-bin_snr[indices])]
+            selection = _selection_from_indices(indices, counts, bkg_counts, bin_snr)
+
+        selection["method"] = method
+        selection["snr_threshold"] = (
+            float(snr_threshold) if method == "snr_threshold" else None
+        )
+        return selection
+
+    def _panel_count_sums(
+        self,
+        light_curves,
+        bkg_fits,
+        panels,
+        selected_indices,
+        tstart,
+        tstop,
+        fallback_to_window=True,
+        buffer=1.0,
+        order=2,
+    ):
+        """Sum observed and fitted-background counts on one shared bin mask."""
+        signal_range = (tstart, tstop)
+        s_counts = []
+        b_counts = []
+        for panel in panels:
+            lc = light_curves[panel]
+            fit = bkg_fits.get(panel)
+            if fit is None:
+                fit = self.fit_background(lc, signal_range, buffer=buffer, order=order)
+                bkg_fits[panel] = fit
+            mask = _selection_mask(
+                lc.counts.size,
+                selected_indices,
+                lc,
+                tstart,
+                tstop,
+                fallback_to_window,
+            )
+            s_counts.append(np.sum(lc.counts[mask]))
+            b_counts.append(np.sum(fit["bkg_counts"][mask]))
+        return np.array(s_counts), np.array(b_counts)
 
     def fit_background(self, lc, signal_range, buffer=0.0, order=2):
         """
@@ -1403,8 +1647,7 @@ class ACSDataAnalyzer:
         t90_tstop = analysis["signal_tstop"]
         signal_range = (t90_tstart, t90_tstop)
 
-        # TT seconds since 2025-01-01 00:00:00.184 UTC.
-        event_time_start_unix = 1735689600.184 + t90_tstart
+        event_time_start_unix = _ACS_TIME_UNIX_EPOCH + t90_tstart
 
         if plot:
             self.plot_lc(
@@ -1419,40 +1662,40 @@ class ACSDataAnalyzer:
         snr_sel = analysis.get("snr_bin_selection") or {}
         selected_indices = np.asarray(snr_sel.get("indices_time", []), dtype=int)
 
-        s_counts = []
-        b_counts = []
-        for panel in panels:
-            lc = analysis["lc"][panel]
-            fit = bkg_fits.get(panel)
-            if fit is None:
-                fit = self.fit_background(lc, signal_range, buffer=1.0, order=2)
+        # One mask for source and background. Fall back to the whole T90
+        # when the greedy selection is empty.
+        s_counts, b_counts = self._panel_count_sums(
+            analysis["lc"],
+            bkg_fits,
+            panels,
+            selected_indices,
+            t90_tstart,
+            t90_tstop,
+            fallback_to_window=True,
+        )
 
-            # One mask for source and background. Fall back to the whole T90
-            # when the greedy selection is empty.
-            if selected_indices.size > 0:
-                mask_sig = np.zeros(lc.counts.size, dtype=bool)
-                mask_sig[selected_indices] = True
-            else:
-                mask_sig = _bins_overlapping(lc, t90_tstart, t90_tstop)
-
-            s_counts.append(np.sum(lc.counts[mask_sig]))
-            b_counts.append(np.sum(fit["bkg_counts"][mask_sig]))
-
-            if plot:
+        if plot:
+            for panel, signal_counts, background_counts in zip(panels, s_counts, b_counts):
+                lc = analysis["lc"][panel]
+                mask_sig = _selection_mask(
+                    lc.counts.size,
+                    selected_indices,
+                    lc,
+                    t90_tstart,
+                    t90_tstop,
+                    fallback_to_window=True,
+                )
                 self.plot_background(
                     lc,
-                    fit,
+                    bkg_fits[panel],
                     signal_range,
-                    s_counts[-1],
-                    b_counts[-1],
+                    signal_counts,
+                    background_counts,
                     panel,
                     save=save_plot,
                     prefix=prefix,
                     selected_indices=np.flatnonzero(mask_sig),
                 )
-
-        s_counts = np.array(s_counts)
-        b_counts = np.array(b_counts)
 
         if sanity_check:
             sanity = analysis.get("sanity") or {}
@@ -1461,3 +1704,495 @@ class ACSDataAnalyzer:
             analysis["sanity"] = sanity
 
         return s_counts, b_counts, event_time_start_unix, analysis
+
+    def analyze_summed_light_curve(
+        self,
+        lightcurve,
+        bin_method="t90",
+        snr_threshold=3.5,
+        p0=0.05,
+        isRate=False,
+        panels=None,
+        bkg_buffer=1.0,
+        bkg_order=2,
+        sanity_check=False,
+    ):
+        """
+        T90 from the sum of the panels, then one shared bin selection.
+
+        1. Sum the panel light curves.
+        2. Bayesian Blocks on that sum. The blocks give the signal window
+           and, inside it, the T90.
+        3. Polynomial background of order ``bkg_order`` on every panel,
+           excluding the whole signal window plus ``bkg_buffer`` on both sides.
+        4. Per bin, d is the sum of the observed counts and b is the sum
+           of the fitted backgrounds. SNR = (d - b) / sqrt(b).
+        5. ``bin_method`` picks the bins used for every panel.
+           "t90" keeps the T90 bins. "snr_threshold" and "greedy" search
+           the whole signal window.
+        """
+        if panels is None:
+            panels = _DEFAULT_PANELS
+        panels = list(panels)
+        if bin_method not in _SUMMED_BIN_METHODS:
+            names = ", ".join(_SUMMED_BIN_METHODS)
+            raise ValueError(f"bin_method must be one of: {names}")
+        if not panels:
+            print("WARNING: no panels to sum")
+            return _failed_summed_analysis(None, bin_method)
+
+        t_min, t_max, lc = _build_panel_light_curves(lightcurve, panels, isRate)
+        summed_counts = _sum_counts(lc, panels)
+        first = lc[panels[0]]
+        lc_sum = TimeBins(summed_counts, first.lo_edges, first.hi_edges, first.exposure)
+
+        try:
+            bb_lc, t90, t90_error, t90_tstart, t90_tstop = _bayesian_blocks_t90(lc_sum, p0)
+            detected = bb_lc.signal_range
+            bb_tstart = float(detected.tstart)
+            bb_tstop = float(detected.tstop)
+        except Exception as exc:
+            print(exc)
+            print("WARNING: Bayesian blocks failed on the summed light curve")
+            return _failed_summed_analysis(lc_sum, bin_method)
+
+        # The polynomial must not see the burst tails that sit outside the T90.
+        signal_range = (bb_tstart, bb_tstop)
+        bkg_fits = {}
+        for panel in panels:
+            try:
+                bkg_fits[panel] = self.fit_background(
+                    lc[panel],
+                    signal_range,
+                    buffer=bkg_buffer,
+                    order=bkg_order,
+                )
+            except RuntimeError as exc:
+                print(exc)
+                print(f"WARNING: background fit failed on {panel}")
+                return _failed_summed_analysis(lc_sum, bin_method)
+
+        # d is the same sum used for the Bayesian Blocks.
+        # b is the sum of the per-panel background models, not a new fit.
+        n_bins = summed_counts.size
+        b = np.zeros(n_bins, dtype=float)
+        bkg_rate_sum = np.zeros(n_bins, dtype=float)
+        for panel in panels:
+            b += np.asarray(bkg_fits[panel]["bkg_counts"], dtype=float)
+            bkg_rate_sum += np.asarray(bkg_fits[panel]["bkg_rate"], dtype=float)
+
+        # T90 drops the faint edges. The SNR cuts can look at those edges,
+        # so their search window is the whole detected signal.
+        if bin_method == "t90":
+            search_tstart, search_tstop = t90_tstart, t90_tstop
+        else:
+            search_tstart, search_tstop = bb_tstart, bb_tstop
+        in_window = _bins_overlapping(lc_sum, search_tstart, search_tstop)
+        selection = self.select_bins_by_method(
+            bin_method,
+            summed_counts,
+            b,
+            in_window,
+            snr_threshold=snr_threshold,
+        )
+        if bin_method == "snr_threshold" and selection["indices_time"].size == 0:
+            print(
+                f"WARNING: no bin inside the signal window has SNR > {snr_threshold}. "
+                "Panel counts will be zero."
+            )
+
+        selected_indices = np.asarray(selection["indices_time"], dtype=int)
+        s_counts, b_counts = self._panel_count_sums(
+            lc,
+            bkg_fits,
+            panels,
+            selected_indices,
+            bb_tstart,
+            bb_tstop,
+            fallback_to_window=False,
+            buffer=bkg_buffer,
+            order=bkg_order,
+        )
+
+        signal_lc = lc_sum.slice(t90_tstart, t90_tstop)
+        bkg_before = lc_sum.slice(lc_sum.centroids[0], t90_tstart)
+        bkg_after = lc_sum.slice(t90_tstop, lc_sum.centroids[-1])
+        significance = _li_ma_significance(signal_lc, bkg_before, bkg_after)
+
+        sanity = None
+        if sanity_check:
+            selected_time_range = None
+            if selected_indices.size > 0:
+                selected_time_range = (
+                    float(lc_sum.lo_edges[selected_indices].min()),
+                    float(lc_sum.hi_edges[selected_indices].max()),
+                )
+            sanity = {
+                "pipeline": "summed",
+                "bin_method": bin_method,
+                "snr_threshold": selection["snr_threshold"],
+                "selection_criterion": bin_method,
+                "t90_window": (float(t90_tstart), float(t90_tstop)),
+                "signal_window": (float(bb_tstart), float(bb_tstop)),
+                "snr_bin_selection": selection,
+                "selected_bins": selected_indices,
+                "selected_time_range": selected_time_range,
+                "panels": list(panels),
+                "s_counts": s_counts,
+                "b_counts": b_counts,
+            }
+
+        return {
+            "pipeline": "summed",
+            "bin_method": bin_method,
+            "snr_threshold": selection["snr_threshold"],
+            "lc_sel": lc_sum,
+            "lc_sum": lc_sum,
+            "bb_lc": bb_lc,
+            "lc": lc,
+            "best_panel": None,
+            "best_snr": selection["snr_optimal"],
+            "bkg_fits": bkg_fits,
+            "panel_snr": {},
+            "snr_bin_selection": selection,
+            "sanity": sanity,
+            "signal_tstart": t90_tstart,
+            "signal_tstop": t90_tstop,
+            "bb_signal_tstart": bb_tstart,
+            "bb_signal_tstop": bb_tstop,
+            "t90": t90,
+            "t90_err_low": t90_error[0],
+            "t90_err_high": t90_error[1],
+            "significance": significance,
+            "significance_peak": -1,
+            "t_min": t_min,
+            "t_max": t_max,
+            "d": summed_counts,
+            "b": b,
+            "bin_snr": selection["bin_snr"],
+            "bkg_rate_sum": bkg_rate_sum,
+            "s_counts": s_counts,
+            "b_counts": b_counts,
+            "panels": list(panels),
+        }
+
+    def extract_source_data_summed_from_fits(
+        self,
+        fits_path,
+        bin_method="t90",
+        snr_threshold=3.5,
+        plot=False,
+        save_plot=False,
+        prefix="",
+        panels=None,
+        p0=0.05,
+        sanity_check=False,
+        bkg_buffer=1.0,
+        bkg_order=2,
+    ):
+        """
+        Read one GRB FITS file and return counts from the summed pipeline.
+
+        ``bin_method`` is "t90", "snr_threshold", or "greedy".
+        The return value matches ``extract_source_data_from_fits``:
+        s_counts, b_counts, event time, analysis.
+        """
+        if panels is None:
+            panels = _DEFAULT_PANELS
+
+        t_min, t_max, event_panels = self.open_fits_file(fits_path)
+        light_curve = {"t_min": t_min, "t_max": t_max, "panels": event_panels}
+        analysis = self.analyze_summed_light_curve(
+            light_curve,
+            bin_method=bin_method,
+            snr_threshold=snr_threshold,
+            p0=p0,
+            isRate=False,
+            panels=panels,
+            bkg_buffer=bkg_buffer,
+            bkg_order=bkg_order,
+            sanity_check=sanity_check,
+        )
+
+        if analysis["bb_lc"] is None:
+            return -1, -1, -1, -1
+
+        if plot or save_plot:
+            self.plot_summed_sanity_check(
+                analysis,
+                save=save_plot,
+                plot=plot,
+                prefix=prefix,
+            )
+
+        event_time_start_unix = _ACS_TIME_UNIX_EPOCH + analysis["signal_tstart"]
+        return (
+            analysis["s_counts"],
+            analysis["b_counts"],
+            event_time_start_unix,
+            analysis,
+        )
+
+    def print_summed_sanity_check(self, results):
+        """Print the T90, the bin rule, and the counts of the summed pipeline."""
+        if results.get("bb_lc") is None:
+            print("No summed-light-curve result. Bayesian blocks did not run.")
+            return
+
+        method = results.get("bin_method")
+        selection = results.get("snr_bin_selection") or {}
+        selected = np.asarray(selection.get("indices_time", []), dtype=int)
+        tstart = results["signal_tstart"]
+        tstop = results["signal_tstop"]
+        panels = results.get("panels") or []
+        descriptions = {
+            "t90": "all bins inside the summed T90",
+            "snr_threshold": "bins inside the Bayesian-blocks signal window with SNR above the threshold",
+            "greedy": "greedy cumulative SNR inside the Bayesian-blocks signal window",
+        }
+
+        print("\n" + "=" * 80)
+        print("SANITY CHECK: summed light curve")
+        print("=" * 80)
+        print(f"Bin method: {method} — {descriptions.get(method, '')}")
+        if method == "snr_threshold":
+            print(f"SNR threshold: {results.get('snr_threshold')}")
+        print(
+            f"T90 window: [{tstart:.6f}, {tstop:.6f}] s "
+            f"(duration={tstop - tstart:.6f} s)"
+        )
+        bb_start = results.get("bb_signal_tstart")
+        bb_stop = results.get("bb_signal_tstop")
+        if bb_start is not None and bb_stop is not None:
+            print(
+                f"Signal window: [{bb_start:.6f}, {bb_stop:.6f}] s "
+                f"(duration={bb_stop - bb_start:.6f} s)"
+            )
+        print(
+            f"T90 = {results.get('t90')} s "
+            f"(err low={results.get('t90_err_low')}, "
+            f"err high={results.get('t90_err_high')})"
+        )
+        print(f"Li & Ma on the summed light curve: {results.get('significance')}")
+        print(
+            f"Selected bins: {selected.size} | time order={list(selected)}"
+        )
+        print(
+            f"Summed selection: d={selection.get('d_sum', np.nan):.3f} | "
+            f"b={selection.get('b_sum', np.nan):.3f} | "
+            f"SNR={selection.get('snr_optimal', np.nan):.4f}"
+        )
+        if method == "greedy":
+            hist = np.asarray(selection.get("snr_cumulative", []), dtype=float)
+            print(f"Greedy steps before the SNR decreased: {hist.size}")
+
+        print("-" * 80)
+        print(f"{'panel':<8} {'S+B':>12} {'B':>12}")
+        s_counts = np.asarray(results.get("s_counts"), dtype=float)
+        b_counts = np.asarray(results.get("b_counts"), dtype=float)
+        for i, panel in enumerate(panels):
+            print(f"{panel:<8} {s_counts[i]:12.3f} {b_counts[i]:12.3f}")
+        print("=" * 80 + "\n")
+
+    def plot_summed_sanity_check(self, results, save=False, plot=True, prefix=""):
+        """
+        Four figures for the summed pipeline.
+
+        1. The six panel light curves.
+        2. The summed light curve and its Bayesian Blocks.
+        3. The bins chosen on the summed curve.
+        4. Those same bins on each panel, with the fitted background.
+        """
+        if results.get("bb_lc") is None:
+            print("No summed-light-curve result to plot.")
+            return
+
+        self._plot_summed_panel_curves(results, save, plot, prefix)
+        self._plot_summed_bayesian_blocks(results, save, plot, prefix)
+        self._plot_summed_selected_bins(results, save, plot, prefix)
+        self._plot_summed_panels_background(results, save, plot, prefix)
+
+    def _summed_figure_axes(self):
+        fig, axes = plt.subplots(
+            3, 2,
+            figsize=_PAPER_FIGSIZE,
+            sharex=True,
+            gridspec_kw={"hspace": 0.38, "wspace": 0.16},
+        )
+        return fig, np.atleast_1d(axes).flatten()
+
+    def _plot_summed_panel_curves(self, results, save, plot, prefix):
+        """One figure with the six observed light curves and the common T90."""
+        panels = results["panels"]
+        t0, half, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
+        fig, axes = self._summed_figure_axes()
+
+        for ax, panel in zip(axes, panels):
+            lc = results["lc"][panel]
+            _draw_t90_and_signal(ax, t0, t90_start, t90_stop, bb_start, bb_stop)
+            t_edges, rates = _rate_steps(lc, t0)
+            ax.plot(t_edges, rates, color=_PAPER_BLUE, lw=0.8, zorder=3)
+            _zoom_ylim(ax, lc.centroids - t0, lc.rates, half)
+            ax.set_title(panel, fontsize=8, pad=3)
+            _style_paper_ax(ax)
+
+        for ax in axes[len(panels):]:
+            ax.axis("off")
+
+        _paper_legend(
+            fig,
+            [
+                Line2D([0], [0], color=_PAPER_BLUE, lw=1.2),
+                Patch(facecolor=_PAPER_SIGNAL, edgecolor="none"),
+                Patch(facecolor=_PAPER_T90, edgecolor="none"),
+            ],
+            ["Observed", "Signal window", "T90"],
+        )
+        _label_bottom_axes(axes, len(panels), "Time - T90 center [s]")
+        fig.suptitle("Panel light curves", fontsize=9, y=0.985)
+        fig.subplots_adjust(
+            left=0.09, right=0.985, bottom=0.07, top=0.88,
+            hspace=0.48, wspace=0.22,
+        )
+        if save:
+            _save_paper_figure(fig, self.output_dir, f"{prefix}_summed_panels")
+        _finish_figure(fig, plot)
+
+    def _plot_summed_bayesian_blocks(self, results, save, plot, prefix):
+        """Summed light curve with the Bayesian Blocks built on that sum."""
+        lc = results["lc_sum"]
+        t0, half, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
+        fig, ax = plt.subplots(figsize=(10, 4))
+
+        _draw_t90_and_signal(ax, t0, t90_start, t90_stop, bb_start, bb_stop)
+        t_edges, rates = _rate_steps(lc, t0)
+        ax.plot(t_edges, rates, color=_PAPER_BLUE, lw=0.8, zorder=2)
+
+        blocks = results["bb_lc"].bb_lightcurve
+        ax.plot(
+            np.append(blocks.lo_edges, blocks.hi_edges[-1]) - t0,
+            np.append(blocks.rates, blocks.rates[-1]),
+            drawstyle="steps-post",
+            color=_PAPER_RED,
+            lw=1.0,
+            zorder=3,
+        )
+        ax.axvline(bb_start - t0, color="k", ls="--", lw=1.0, zorder=4)
+        ax.axvline(bb_stop - t0, color="k", ls="--", lw=1.0, zorder=4)
+        _zoom_ylim(ax, lc.centroids - t0, lc.rates, half)
+        ax.set_xlabel("Time - T90 center [s]")
+        ax.set_ylabel("Counts / s")
+        ax.set_title("Summed light curve and Bayesian blocks")
+        ax.legend(
+            [
+                Line2D([0], [0], color=_PAPER_BLUE, lw=1.2),
+                Line2D([0], [0], color=_PAPER_RED, lw=1.2),
+                Patch(facecolor=_PAPER_T90, edgecolor="none"),
+                Line2D([0], [0], color="k", ls="--", lw=1.0),
+            ],
+            ["Summed counts", "Bayesian blocks", "T90", "Signal start/stop"],
+        )
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        if save:
+            _save_paper_figure(fig, self.output_dir, f"{prefix}_summed_bayesian_blocks")
+        _finish_figure(fig, plot)
+
+    def _plot_summed_selected_bins(self, results, save, plot, prefix):
+        """Summed counts, summed background, and the bins kept by the method."""
+        lc = results["lc_sum"]
+        t0, half, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
+        selection = results.get("snr_bin_selection") or {}
+        selected = np.asarray(selection.get("indices_time", []), dtype=int)
+        method = results.get("bin_method")
+        bkg_rate = results.get("bkg_rate_sum")
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+        _draw_t90_and_signal(ax, t0, t90_start, t90_stop, bb_start, bb_stop)
+        _draw_bin_bars(ax, lc, selected, t0, _PAPER_BINS)
+        t_edges, rates = _rate_steps(lc, t0)
+        ax.plot(t_edges, rates, color=_PAPER_BLUE, lw=0.8, zorder=3)
+        if bkg_rate is not None:
+            ax.plot(lc.centroids - t0, bkg_rate, color=_PAPER_RED, lw=0.9, zorder=3)
+
+        _zoom_ylim(ax, lc.centroids - t0, lc.rates, half, bkg_rate)
+        snr = selection.get("snr_optimal", np.nan)
+        title = f"Selected bins ({method}), n={selected.size}, SNR={snr:.3f}"
+        if method == "snr_threshold":
+            title = (
+                f"Selected bins (SNR > {results.get('snr_threshold')}), "
+                f"n={selected.size}, SNR={snr:.3f}"
+            )
+        ax.set_title(title)
+        ax.set_xlabel("Time - T90 center [s]")
+        ax.set_ylabel("Counts / s")
+        ax.legend(
+            [
+                Line2D([0], [0], color=_PAPER_BLUE, lw=1.2),
+                Line2D([0], [0], color=_PAPER_RED, lw=1.2),
+                Patch(facecolor=_PAPER_SIGNAL, edgecolor="none"),
+                Patch(facecolor=_PAPER_T90, edgecolor="none"),
+                Patch(facecolor=_PAPER_BINS, alpha=0.45, edgecolor="none"),
+            ],
+            ["Summed counts", "Summed background", "Signal window", "T90", "Selected bins"],
+        )
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        if save:
+            _save_paper_figure(fig, self.output_dir, f"{prefix}_summed_selected_bins")
+        _finish_figure(fig, plot)
+
+    def _plot_summed_panels_background(self, results, save, plot, prefix):
+        """The shared bins and the polynomial background on every panel."""
+        panels = results["panels"]
+        t0, half, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
+        selection = results.get("snr_bin_selection") or {}
+        selected = np.asarray(selection.get("indices_time", []), dtype=int)
+        s_counts = np.asarray(results.get("s_counts"), dtype=float)
+        b_counts = np.asarray(results.get("b_counts"), dtype=float)
+        fig, axes = self._summed_figure_axes()
+
+        for i, (ax, panel) in enumerate(zip(axes, panels)):
+            lc = results["lc"][panel]
+            fit = results["bkg_fits"].get(panel)
+            _draw_t90_and_signal(ax, t0, t90_start, t90_stop, bb_start, bb_stop)
+            _draw_bin_bars(ax, lc, selected, t0, _PAPER_BINS)
+            t_edges, rates = _rate_steps(lc, t0)
+            ax.plot(t_edges, rates, color=_PAPER_BLUE, lw=0.8, zorder=3)
+            bkg_rate = None
+            if fit is not None:
+                bkg_rate = fit["bkg_rate"]
+                ax.plot(lc.centroids - t0, bkg_rate, color=_PAPER_RED, lw=0.9, zorder=3)
+            _zoom_ylim(ax, lc.centroids - t0, lc.rates, half, bkg_rate)
+            ax.set_title(
+                f"{panel}   S+B={s_counts[i]:.1f}   B={b_counts[i]:.1f}",
+                fontsize=7.5,
+                pad=3,
+            )
+            _style_paper_ax(ax)
+
+        for ax in axes[len(panels):]:
+            ax.axis("off")
+
+        _paper_legend(
+            fig,
+            [
+                Line2D([0], [0], color=_PAPER_BLUE, lw=1.2),
+                Line2D([0], [0], color=_PAPER_RED, lw=1.2),
+                Patch(facecolor=_PAPER_SIGNAL, edgecolor="none"),
+                Patch(facecolor=_PAPER_T90, edgecolor="none"),
+                Patch(facecolor=_PAPER_BINS, alpha=0.45, edgecolor="none"),
+            ],
+            ["Observed", "Background", "Signal window", "T90", "Selected bins"],
+        )
+        _label_bottom_axes(axes, len(panels), "Time - T90 center [s]")
+        fig.suptitle("Selected bins on each panel", fontsize=9, y=0.985)
+        fig.subplots_adjust(
+            left=0.09, right=0.985, bottom=0.07, top=0.88,
+            hspace=0.48, wspace=0.22,
+        )
+        if save:
+            _save_paper_figure(
+                fig, self.output_dir, f"{prefix}_summed_panels_background"
+            )
+        _finish_figure(fig, plot)
