@@ -529,6 +529,12 @@ class ACSPrepareL2:
     ):
         """
         Plot ACS light curves from a FITS file.
+
+        Expected FITS columns:
+            TIME     : start time of each bin
+            TIMEDEL  : bin duration, stored as a 6-element vector
+            COUNT    : counts for the 6 detector panels
+
         Figures can be saved to disk or shown on screen.
         """
 
@@ -541,27 +547,49 @@ class ACSPrepareL2:
             header = hdul[0].header
             data = hdul[1].data
 
+            # =========================
             # Observation start time
-            time_start = header["DATE-OBS"]
+            # =========================
+            time_start = header.get("DATE-OBS")
 
-            print(f"Observation start: {time_start}")
+            if time_start is not None:
+                print(f"Observation start: {time_start}")
 
+            # =========================
             # Time bins
-            t_min = data["T_MIN"]
-            t_max = data["T_MAX"]
+            # =========================
 
-            # Bin center and width
+            # TIME corresponds to the beginning of the bin
+            t_min = data["TIME"]
+
+            # TIMEDEL is stored as a 6-element vector.
+            # The values are assumed to be identical for all panels,
+            # so use the first one.
+            dt = data["TIMEDEL"][:, 0]
+
+            t_max = t_min + dt
             t_center = 0.5 * (t_min + t_max)
-            dt = t_max - t_min
 
-            # Detector panels
+            # =========================
+            # Detector counts
+            # =========================
+
+            # COUNT has shape approximately:
+            # (N_time_bins, 6)
+            counts = data["COUNT"]
+
+            panel_names = [
+                "SCBA_A0",
+                "SCBA_A1",
+                "SCBB_A0",
+                "SCBB_A1",
+                "SCBC_A0",
+                "SCBC_A1",
+            ]
+
             panels = {
-                "SCBA_A0": data["COUNTS_SCBA_A0_G"],
-                "SCBA_A1": data["COUNTS_SCBA_A1_G"],
-                "SCBB_A0": data["COUNTS_SCBB_A0_G"],
-                "SCBB_A1": data["COUNTS_SCBB_A1_G"],
-                "SCBC_A0": data["COUNTS_SCBC_A0_G"],
-                "SCBC_A1": data["COUNTS_SCBC_A1_G"],
+                panel_name: counts[:, i]
+                for i, panel_name in enumerate(panel_names)
             }
 
             # =========================
@@ -578,15 +606,15 @@ class ACSPrepareL2:
 
                 axes = axes.flatten()
 
-                for ax, (panel_name, counts) in zip(
+                for ax, (panel_name, panel_counts) in zip(
                     axes,
                     panels.items()
                 ):
 
                     ax.step(
-                        t_center,
-                        counts,
-                        where="mid"
+                        t_max,
+                        panel_counts,
+                        where="pre"
                     )
 
                     ax.set_title(panel_name)
@@ -599,7 +627,7 @@ class ACSPrepareL2:
                     fontsize=14
                 )
 
-                plt.tight_layout()
+                fig_counts.tight_layout()
 
                 if save:
 
@@ -609,7 +637,8 @@ class ACSPrepareL2:
 
                     fig_counts.savefig(
                         counts_filename,
-                        dpi=300
+                        dpi=300,
+                        bbox_inches="tight"
                     )
 
                     plt.close(fig_counts)
@@ -622,6 +651,7 @@ class ACSPrepareL2:
             # =========================
             # Plot rates
             # =========================
+
             fig_rate, axes = plt.subplots(
                 3,
                 2,
@@ -631,18 +661,17 @@ class ACSPrepareL2:
 
             axes = axes.flatten()
 
-            for ax, (panel_name, counts) in zip(
+            for ax, (panel_name, panel_counts) in zip(
                 axes,
                 panels.items()
             ):
 
-                rate = counts / dt
+                rate = panel_counts / dt
 
                 ax.step(
-                    t_center,
+                    t_max,
                     rate,
-                    where="mid",
-                    color="b"
+                    where="pre"
                 )
 
                 ax.set_title(panel_name)
@@ -655,7 +684,7 @@ class ACSPrepareL2:
                 fontsize=14
             )
 
-            plt.tight_layout()
+            fig_rate.tight_layout()
 
             if save:
 
@@ -665,7 +694,8 @@ class ACSPrepareL2:
 
                 fig_rate.savefig(
                     rate_filename,
-                    dpi=300
+                    dpi=300,
+                    bbox_inches="tight"
                 )
 
                 plt.close(fig_rate)
@@ -674,7 +704,7 @@ class ACSPrepareL2:
 
             else:
                 plt.show()
-
+            
     def create_acs_lc_fits(self, acs_lc, output_dir):
 
         mjd_ref_timestamp = 1735689600.184
@@ -798,10 +828,10 @@ class ACSPrepareL2:
         hdr["TASSIGN"] = ("SATELLITE", "Time assigned")
         hdr["TIMESYS"] = ("TT", "Time System")
         hdr["TIMEUNIT"] = ("s", "Time unit for timing header keywords")
-        hdr["TIMPIXR"] = (0.0, "TIME parameter reflects bin start (0), bin end (1) or bin center (2)")
+        hdr["TIMEPIXR"] = (0.0, "TIME parameter reflects bin start (0), bin end (1) or bin center (2)")
 
         hdr["CLOCKAPP"] = (False, "If clock corrections are applied (T/F)")
-        hdr["DEADAPP"] = (False, "If deadtime correction is applied to TIMEDEL")
+        hdr["DEADAPP"] = (True, "If deadtime correction is applied to TIMEDEL")
         hdr["DATE-OBS"] = (date_obs, "Start Date")
         hdr["DATE-END"] = (date_end, "Stop Date")
         hdr["TSTART"] = (time_start, "Start Time")
