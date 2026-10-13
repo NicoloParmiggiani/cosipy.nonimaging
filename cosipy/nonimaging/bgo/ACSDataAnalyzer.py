@@ -2056,11 +2056,11 @@ class ACSDataAnalyzer:
         """Summed light curve with the Bayesian Blocks built on that sum."""
         lc = results["lc_sum"]
         t0, half, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
-        fig, ax = plt.subplots(figsize=(10, 4))
+        fig, ax = plt.subplots(figsize=(10, 6))
 
         _draw_t90_and_signal(ax, t0, t90_start, t90_stop, bb_start, bb_stop)
         t_edges, rates = _rate_steps(lc, t0)
-        ax.plot(t_edges, rates, color=_PAPER_BLUE, lw=0.8, zorder=2)
+        ax.plot(t_edges, rates, color=_PAPER_BLUE, lw=2, zorder=2)
 
         blocks = results["bb_lc"].bb_lightcurve
         ax.plot(
@@ -2068,23 +2068,25 @@ class ACSDataAnalyzer:
             np.append(blocks.rates, blocks.rates[-1]),
             drawstyle="steps-post",
             color=_PAPER_RED,
-            lw=1.0,
+            lw=2,
             zorder=3,
         )
-        ax.axvline(bb_start - t0, color="k", ls="--", lw=1.0, zorder=4)
-        ax.axvline(bb_stop - t0, color="k", ls="--", lw=1.0, zorder=4)
+        ax.axvline(bb_start - t0, color="k", ls="--", lw=1.5, zorder=4)
+        ax.axvline(bb_stop - t0, color="k", ls="--", lw=1.5, zorder=4)
         _zoom_ylim(ax, lc.centroids - t0, lc.rates, half)
-        ax.set_xlabel("Time - T90 center [s]")
-        ax.set_ylabel("Counts / s")
-        ax.set_title("Summed light curve and Bayesian blocks")
+        ax.set_xlabel("Time - T90 center [s]", fontsize=15)
+        ax.set_ylabel("Counts / s", fontsize=15)
+        ax.tick_params(axis="both", labelsize=15)
+        #ax.set_title("Summed light curve and Bayesian blocks")
         ax.legend(
             [
-                Line2D([0], [0], color=_PAPER_BLUE, lw=1.2),
-                Line2D([0], [0], color=_PAPER_RED, lw=1.2),
+                Line2D([0], [0], color=_PAPER_BLUE, lw=2),
+                Line2D([0], [0], color=_PAPER_RED, lw=2),
                 Patch(facecolor=_PAPER_T90, edgecolor="none"),
-                Line2D([0], [0], color="k", ls="--", lw=1.0),
+                Line2D([0], [0], color="k", ls="--", lw=1.5),
             ],
-            ["Summed counts", "Bayesian blocks", "T90", "Signal start/stop"],
+            ["Summed counts", "Bayesian blocks", "T90", "Signal start/stop"]
+            , fontsize=15
         )
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
