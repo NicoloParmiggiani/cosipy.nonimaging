@@ -205,6 +205,14 @@ _PAPER_RED = "#d62728"
 _PAPER_T90 = "#b7e4c7"
 _PAPER_BINS = "#1b7f3b"
 
+# Shared with _plot_summed_bayesian_blocks. The six-panel figures are a
+# 2 by 3 grid of that same (10, 6) panel.
+_SUMMED_FIGSIZE = (10, 6)
+_SUMMED_GRID_FIGSIZE = (20, 18)
+_SUMMED_LW = 2
+_SUMMED_DASH_LW = 1.5
+_SUMMED_FONT = 15
+
 
 def _draw_bin_bars(ax, lc, indices, t0, color, alpha=0.45):
     """Full-height bars whose width is exactly one light-curve bin."""
@@ -282,19 +290,13 @@ def _t90_view(tstart, tstop):
 
 
 def _summed_time_view(results):
-    """T90 center and a half-width that also covers the signal window."""
+    """T90 center and the signal edges, in the light-curve time frame."""
     t90_start = float(results["signal_tstart"])
     t90_stop = float(results["signal_tstop"])
     bb_start = float(results.get("bb_signal_tstart", t90_start))
     bb_stop = float(results.get("bb_signal_tstop", t90_stop))
     t0 = 0.5 * (t90_start + t90_stop)
-    half = max(
-        5.0,
-        0.5 * (t90_stop - t90_start) + 2.0,
-        abs(bb_start - t0) + 2.0,
-        abs(bb_stop - t0) + 2.0,
-    )
-    return t0, half, t90_start, t90_stop, bb_start, bb_stop
+    return t0, t90_start, t90_stop, bb_start, bb_stop
 
 
 def _draw_t90_and_signal(ax, t0, t90_start, t90_stop, _bb_start, _bb_stop):
@@ -305,19 +307,26 @@ def _draw_t90_and_signal(ax, t0, t90_start, t90_stop, _bb_start, _bb_stop):
     )
 
 
-def _zoom_ylim(ax, t, rates, half, extra_rates=None):
-    """Y limits from the data inside the plotted time window."""
-    in_view = (t >= -half) & (t <= half)
-    if not np.any(in_view):
-        ax.set_xlim(-half, half)
-        return
-    chunks = [np.asarray(rates, dtype=float)[in_view]]
+def _frame_lc_window(ax, lc, t0, extra_rates=None):
+    """Axes filled by the light curve, so its 60 s window is centered."""
+    t_lo = float(lc.lo_edges[0]) - t0
+    t_hi = float(lc.hi_edges[-1]) - t0
+    chunks = [np.asarray(lc.rates, dtype=float)]
     if extra_rates is not None:
-        chunks.append(np.asarray(extra_rates, dtype=float)[in_view])
+        extra = np.asarray(extra_rates, dtype=float)
+        if extra.shape == chunks[0].shape:
+            chunks.append(extra)
     y_max = np.nanmax(np.concatenate(chunks))
     if np.isfinite(y_max) and y_max > 0:
         ax.set_ylim(0, 1.15 * y_max)
-    ax.set_xlim(-half, half)
+    ax.set_xlim(t_lo, t_hi)
+
+
+def _style_summed_ax(ax):
+    """Tick, label and grid sizes of the summed Bayesian-blocks plot."""
+    ax.set_ylabel("Counts / s", fontsize=_SUMMED_FONT)
+    ax.tick_params(axis="both", labelsize=_SUMMED_FONT)
+    ax.grid(True, alpha=0.3)
 
 
 def _paper_legend(fig, handles, labels):
@@ -328,10 +337,10 @@ def _paper_legend(fig, handles, labels):
         loc="upper center",
         ncol=len(labels),
         frameon=False,
-        bbox_to_anchor=(0.5, 0.955),
-        fontsize=7,
-        handlelength=1.6,
-        columnspacing=1.1,
+        bbox_to_anchor=(0.5, 0.945),
+        fontsize=_SUMMED_FONT,
+        handlelength=2.2,
+        columnspacing=1.4,
     )
 
 
@@ -339,7 +348,7 @@ def _label_bottom_axes(axes, n_shown, text):
     """X label on the last row of a 2-column panel grid."""
     bottom = max(0, ((n_shown - 1) // 2) * 2)
     for ax in axes[bottom:n_shown]:
-        ax.set_xlabel(text, fontsize=8)
+        ax.set_xlabel(text, fontsize=_SUMMED_FONT)
 
 
 def _li_ma_significance(signal_lc, bkg_before, bkg_after):
@@ -2010,26 +2019,25 @@ class ACSDataAnalyzer:
     def _summed_figure_axes(self):
         fig, axes = plt.subplots(
             3, 2,
-            figsize=_PAPER_FIGSIZE,
+            figsize=_SUMMED_GRID_FIGSIZE,
             sharex=True,
-            gridspec_kw={"hspace": 0.38, "wspace": 0.16},
         )
         return fig, np.atleast_1d(axes).flatten()
 
     def _plot_summed_panel_curves(self, results, save, plot, prefix):
         """One figure with the six observed light curves and the common T90."""
         panels = results["panels"]
-        t0, half, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
+        t0, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
         fig, axes = self._summed_figure_axes()
 
         for ax, panel in zip(axes, panels):
             lc = results["lc"][panel]
             _draw_t90_and_signal(ax, t0, t90_start, t90_stop, bb_start, bb_stop)
             t_edges, rates = _rate_steps(lc, t0)
-            ax.plot(t_edges, rates, color=_PAPER_BLUE, lw=0.8, zorder=3)
-            _zoom_ylim(ax, lc.centroids - t0, lc.rates, half)
-            ax.set_title(panel, fontsize=8, pad=3)
-            _style_paper_ax(ax)
+            ax.plot(t_edges, rates, color=_PAPER_BLUE, lw=_SUMMED_LW, zorder=3)
+            _frame_lc_window(ax, lc, t0)
+            ax.set_title(panel, fontsize=_SUMMED_FONT, pad=8)
+            _style_summed_ax(ax)
 
         for ax in axes[len(panels):]:
             ax.axis("off")
@@ -2037,16 +2045,16 @@ class ACSDataAnalyzer:
         _paper_legend(
             fig,
             [
-                Line2D([0], [0], color=_PAPER_BLUE, lw=1.2),
+                Line2D([0], [0], color=_PAPER_BLUE, lw=_SUMMED_LW),
                 Patch(facecolor=_PAPER_T90, edgecolor="none"),
             ],
             ["Observed", "T90"],
         )
         _label_bottom_axes(axes, len(panels), "Time - T90 center [s]")
-        fig.suptitle("Panel light curves", fontsize=9, y=0.985)
+        fig.suptitle("Panel light curves", fontsize=_SUMMED_FONT, y=0.995)
         fig.subplots_adjust(
-            left=0.09, right=0.985, bottom=0.07, top=0.88,
-            hspace=0.48, wspace=0.22,
+            left=0.08, right=0.98, bottom=0.06, top=0.90,
+            hspace=0.45, wspace=0.28,
         )
         if save:
             _save_paper_figure(fig, self.output_dir, f"{prefix}_summed_panels")
@@ -2055,12 +2063,12 @@ class ACSDataAnalyzer:
     def _plot_summed_bayesian_blocks(self, results, save, plot, prefix):
         """Summed light curve with the Bayesian Blocks built on that sum."""
         lc = results["lc_sum"]
-        t0, half, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
-        fig, ax = plt.subplots(figsize=(10, 6))
+        t0, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
+        fig, ax = plt.subplots(figsize=_SUMMED_FIGSIZE)
 
         _draw_t90_and_signal(ax, t0, t90_start, t90_stop, bb_start, bb_stop)
         t_edges, rates = _rate_steps(lc, t0)
-        ax.plot(t_edges, rates, color=_PAPER_BLUE, lw=2, zorder=2)
+        ax.plot(t_edges, rates, color=_PAPER_BLUE, lw=_SUMMED_LW, zorder=2)
 
         blocks = results["bb_lc"].bb_lightcurve
         ax.plot(
@@ -2068,27 +2076,25 @@ class ACSDataAnalyzer:
             np.append(blocks.rates, blocks.rates[-1]),
             drawstyle="steps-post",
             color=_PAPER_RED,
-            lw=2,
+            lw=_SUMMED_LW,
             zorder=3,
         )
-        ax.axvline(bb_start - t0, color="k", ls="--", lw=1.5, zorder=4)
-        ax.axvline(bb_stop - t0, color="k", ls="--", lw=1.5, zorder=4)
-        _zoom_ylim(ax, lc.centroids - t0, lc.rates, half)
-        ax.set_xlabel("Time - T90 center [s]", fontsize=15)
-        ax.set_ylabel("Counts / s", fontsize=15)
-        ax.tick_params(axis="both", labelsize=15)
+        ax.axvline(bb_start - t0, color="k", ls="--", lw=_SUMMED_DASH_LW, zorder=4)
+        ax.axvline(bb_stop - t0, color="k", ls="--", lw=_SUMMED_DASH_LW, zorder=4)
+        _frame_lc_window(ax, lc, t0)
+        ax.set_xlabel("Time - T90 center [s]", fontsize=_SUMMED_FONT)
+        _style_summed_ax(ax)
         #ax.set_title("Summed light curve and Bayesian blocks")
         ax.legend(
             [
-                Line2D([0], [0], color=_PAPER_BLUE, lw=2),
-                Line2D([0], [0], color=_PAPER_RED, lw=2),
+                Line2D([0], [0], color=_PAPER_BLUE, lw=_SUMMED_LW),
+                Line2D([0], [0], color=_PAPER_RED, lw=_SUMMED_LW),
                 Patch(facecolor=_PAPER_T90, edgecolor="none"),
-                Line2D([0], [0], color="k", ls="--", lw=1.5),
+                Line2D([0], [0], color="k", ls="--", lw=_SUMMED_DASH_LW),
             ],
-            ["Summed counts", "Bayesian blocks", "T90", "Signal start/stop"]
-            , fontsize=15
+            ["Summed counts", "Bayesian blocks", "T90", "Signal start/stop"],
+            fontsize=_SUMMED_FONT,
         )
-        ax.grid(True, alpha=0.3)
         fig.tight_layout()
         if save:
             _save_paper_figure(fig, self.output_dir, f"{prefix}_summed_bayesian_blocks")
@@ -2097,21 +2103,21 @@ class ACSDataAnalyzer:
     def _plot_summed_selected_bins(self, results, save, plot, prefix):
         """Summed counts, summed background, and the bins kept by the method."""
         lc = results["lc_sum"]
-        t0, half, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
+        t0, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
         selection = results.get("snr_bin_selection") or {}
         selected = np.asarray(selection.get("indices_time", []), dtype=int)
         method = results.get("bin_method")
         bkg_rate = results.get("bkg_rate_sum")
 
-        fig, ax = plt.subplots(figsize=(10, 4))
+        fig, ax = plt.subplots(figsize=_SUMMED_FIGSIZE)
         _draw_t90_and_signal(ax, t0, t90_start, t90_stop, bb_start, bb_stop)
         _draw_bin_bars(ax, lc, selected, t0, _PAPER_BINS)
         t_edges, rates = _rate_steps(lc, t0)
-        ax.plot(t_edges, rates, color=_PAPER_BLUE, lw=0.8, zorder=3)
+        ax.plot(t_edges, rates, color=_PAPER_BLUE, lw=_SUMMED_LW, zorder=3)
         if bkg_rate is not None:
-            ax.plot(lc.centroids - t0, bkg_rate, color=_PAPER_RED, lw=0.9, zorder=3)
+            ax.plot(lc.centroids - t0, bkg_rate, color=_PAPER_RED, lw=_SUMMED_LW, zorder=3)
 
-        _zoom_ylim(ax, lc.centroids - t0, lc.rates, half, bkg_rate)
+        _frame_lc_window(ax, lc, t0, bkg_rate)
         snr = selection.get("snr_optimal", np.nan)
         title = f"Selected bins ({method}), n={selected.size}, SNR={snr:.3f}"
         if method == "snr_threshold":
@@ -2119,19 +2125,19 @@ class ACSDataAnalyzer:
                 f"Selected bins (SNR > {results.get('snr_threshold')}), "
                 f"n={selected.size}, SNR={snr:.3f}"
             )
-        ax.set_title(title)
-        ax.set_xlabel("Time - T90 center [s]")
-        ax.set_ylabel("Counts / s")
+        ax.set_title(title, fontsize=_SUMMED_FONT)
+        ax.set_xlabel("Time - T90 center [s]", fontsize=_SUMMED_FONT)
+        _style_summed_ax(ax)
         ax.legend(
             [
-                Line2D([0], [0], color=_PAPER_BLUE, lw=1.2),
-                Line2D([0], [0], color=_PAPER_RED, lw=1.2),
+                Line2D([0], [0], color=_PAPER_BLUE, lw=_SUMMED_LW),
+                Line2D([0], [0], color=_PAPER_RED, lw=_SUMMED_LW),
                 Patch(facecolor=_PAPER_T90, edgecolor="none"),
                 Patch(facecolor=_PAPER_BINS, alpha=0.45, edgecolor="none"),
             ],
             ["Summed counts", "Summed background", "T90", "Selected bins"],
+            fontsize=_SUMMED_FONT,
         )
-        ax.grid(True, alpha=0.3)
         fig.tight_layout()
         if save:
             _save_paper_figure(fig, self.output_dir, f"{prefix}_summed_selected_bins")
@@ -2140,7 +2146,7 @@ class ACSDataAnalyzer:
     def _plot_summed_panels_background(self, results, save, plot, prefix):
         """The shared bins and the polynomial background on every panel."""
         panels = results["panels"]
-        t0, half, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
+        t0, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
         selection = results.get("snr_bin_selection") or {}
         selected = np.asarray(selection.get("indices_time", []), dtype=int)
         s_counts = np.asarray(results.get("s_counts"), dtype=float)
@@ -2153,18 +2159,21 @@ class ACSDataAnalyzer:
             _draw_t90_and_signal(ax, t0, t90_start, t90_stop, bb_start, bb_stop)
             _draw_bin_bars(ax, lc, selected, t0, _PAPER_BINS)
             t_edges, rates = _rate_steps(lc, t0)
-            ax.plot(t_edges, rates, color=_PAPER_BLUE, lw=0.8, zorder=3)
+            ax.plot(t_edges, rates, color=_PAPER_BLUE, lw=_SUMMED_LW, zorder=3)
             bkg_rate = None
             if fit is not None:
                 bkg_rate = fit["bkg_rate"]
-                ax.plot(lc.centroids - t0, bkg_rate, color=_PAPER_RED, lw=0.9, zorder=3)
-            _zoom_ylim(ax, lc.centroids - t0, lc.rates, half, bkg_rate)
+                ax.plot(
+                    lc.centroids - t0, bkg_rate,
+                    color=_PAPER_RED, lw=_SUMMED_LW, zorder=3,
+                )
+            _frame_lc_window(ax, lc, t0, bkg_rate)
             ax.set_title(
                 f"{panel}   S+B={s_counts[i]:.1f}   B={b_counts[i]:.1f}",
-                fontsize=7.5,
-                pad=3,
+                fontsize=_SUMMED_FONT,
+                pad=8,
             )
-            _style_paper_ax(ax)
+            _style_summed_ax(ax)
 
         for ax in axes[len(panels):]:
             ax.axis("off")
@@ -2172,18 +2181,18 @@ class ACSDataAnalyzer:
         _paper_legend(
             fig,
             [
-                Line2D([0], [0], color=_PAPER_BLUE, lw=1.2),
-                Line2D([0], [0], color=_PAPER_RED, lw=1.2),
+                Line2D([0], [0], color=_PAPER_BLUE, lw=_SUMMED_LW),
+                Line2D([0], [0], color=_PAPER_RED, lw=_SUMMED_LW),
                 Patch(facecolor=_PAPER_T90, edgecolor="none"),
                 Patch(facecolor=_PAPER_BINS, alpha=0.45, edgecolor="none"),
             ],
             ["Observed", "Background", "T90", "Selected bins"],
         )
         _label_bottom_axes(axes, len(panels), "Time - T90 center [s]")
-        fig.suptitle("Selected bins on each panel", fontsize=9, y=0.985)
+        fig.suptitle("Selected bins on each panel", fontsize=_SUMMED_FONT, y=0.995)
         fig.subplots_adjust(
-            left=0.09, right=0.985, bottom=0.07, top=0.88,
-            hspace=0.48, wspace=0.22,
+            left=0.08, right=0.98, bottom=0.06, top=0.90,
+            hspace=0.45, wspace=0.28,
         )
         if save:
             _save_paper_figure(
