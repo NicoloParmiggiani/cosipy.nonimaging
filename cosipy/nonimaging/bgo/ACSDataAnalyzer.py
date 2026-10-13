@@ -313,7 +313,7 @@ def _draw_t90_and_signal(ax, t0, t90_start, t90_stop, _bb_start, _bb_stop):
 
 
 def _frame_lc_window(ax, lc, t0, extra_rates=None, half=30.0):
-    """Y limits from the data inside [-half, half] seconds from the GRB."""
+    """Y limits from the data inside [-half, half] seconds of the plotted zero."""
     t = np.asarray(lc.centroids, dtype=float) - t0
     in_view = (t >= -half) & (t <= half)
     chunks = []
@@ -2072,7 +2072,8 @@ class ACSDataAnalyzer:
     def _plot_summed_bayesian_blocks(self, results, save, plot, prefix):
         """Summed light curve with the Bayesian Blocks built on that sum."""
         lc = results["lc_sum"]
-        t0, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
+        _, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
+        t0 = 0.5 * (t90_start + t90_stop)
         fig, ax = plt.subplots(figsize=_SUMMED_FIGSIZE)
 
         _draw_t90_and_signal(ax, t0, t90_start, t90_stop, bb_start, bb_stop)
@@ -2091,7 +2092,7 @@ class ACSDataAnalyzer:
         ax.axvline(bb_start - t0, color="k", ls="--", lw=_SUMMED_DASH_LW, zorder=4)
         ax.axvline(bb_stop - t0, color="k", ls="--", lw=_SUMMED_DASH_LW, zorder=4)
         _frame_lc_window(ax, lc, t0, half=5.0)
-        ax.set_xlabel("Time - GRB [s]", fontsize=_SUMMED_FONT)
+        ax.set_xlabel("Time - T90 center [s]", fontsize=_SUMMED_FONT)
         _style_summed_ax(ax)
         ax.set_title("Summed light curve and Bayesian blocks")
         ax.legend(
@@ -2112,7 +2113,8 @@ class ACSDataAnalyzer:
     def _plot_summed_selected_bins(self, results, save, plot, prefix):
         """Summed counts, summed background, and the bins kept by the method."""
         lc = results["lc_sum"]
-        t0, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
+        _, t90_start, t90_stop, bb_start, bb_stop = _summed_time_view(results)
+        t0 = 0.5 * (t90_start + t90_stop)
         selection = results.get("snr_bin_selection") or {}
         selected = np.asarray(selection.get("indices_time", []), dtype=int)
         method = results.get("bin_method")
@@ -2135,7 +2137,7 @@ class ACSDataAnalyzer:
                 f"n={selected.size}, SNR={snr:.3f}"
             )
         ax.set_title(title, fontsize=_SUMMED_FONT)
-        ax.set_xlabel("Time - GRB [s]", fontsize=_SUMMED_FONT)
+        ax.set_xlabel("Time - T90 center [s]", fontsize=_SUMMED_FONT)
         _style_summed_ax(ax)
         ax.legend(
             [
