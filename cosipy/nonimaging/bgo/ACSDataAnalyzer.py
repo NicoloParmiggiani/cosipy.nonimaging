@@ -290,13 +290,12 @@ def _t90_view(tstart, tstop):
 
 
 def _summed_time_view(results):
-    """T90 center and the signal edges, in the light-curve time frame."""
+    """Signal edges. The light curve is already seconds from the GRB."""
     t90_start = float(results["signal_tstart"])
     t90_stop = float(results["signal_tstop"])
     bb_start = float(results.get("bb_signal_tstart", t90_start))
     bb_stop = float(results.get("bb_signal_tstop", t90_stop))
-    t0 = 0.5 * (t90_start + t90_stop)
-    return t0, t90_start, t90_stop, bb_start, bb_stop
+    return 0.0, t90_start, t90_stop, bb_start, bb_stop
 
 
 def _draw_t90_and_signal(ax, t0, t90_start, t90_stop, _bb_start, _bb_stop):
@@ -307,19 +306,23 @@ def _draw_t90_and_signal(ax, t0, t90_start, t90_stop, _bb_start, _bb_stop):
     )
 
 
-def _frame_lc_window(ax, lc, t0, extra_rates=None):
-    """Axes filled by the light curve, so its 60 s window is centered."""
-    t_lo = float(lc.lo_edges[0]) - t0
-    t_hi = float(lc.hi_edges[-1]) - t0
-    chunks = [np.asarray(lc.rates, dtype=float)]
+def _frame_lc_window(ax, lc, t0, extra_rates=None, half=30.0):
+    """Y limits from the data inside [-half, half] seconds from the GRB."""
+    t = np.asarray(lc.centroids, dtype=float) - t0
+    in_view = (t >= -half) & (t <= half)
+    chunks = []
+    rates = np.asarray(lc.rates, dtype=float)
+    if np.any(in_view):
+        chunks.append(rates[in_view])
     if extra_rates is not None:
         extra = np.asarray(extra_rates, dtype=float)
-        if extra.shape == chunks[0].shape:
-            chunks.append(extra)
-    y_max = np.nanmax(np.concatenate(chunks))
-    if np.isfinite(y_max) and y_max > 0:
-        ax.set_ylim(0, 1.15 * y_max)
-    ax.set_xlim(t_lo, t_hi)
+        if extra.shape == rates.shape and np.any(in_view):
+            chunks.append(extra[in_view])
+    if chunks:
+        y_max = np.nanmax(np.concatenate(chunks))
+        if np.isfinite(y_max) and y_max > 0:
+            ax.set_ylim(0, 1.15 * y_max)
+    ax.set_xlim(-half, half)
 
 
 def _style_summed_ax(ax):
@@ -2050,7 +2053,7 @@ class ACSDataAnalyzer:
             ],
             ["Observed", "T90"],
         )
-        _label_bottom_axes(axes, len(panels), "Time - T90 center [s]")
+        _label_bottom_axes(axes, len(panels), "Time [s]")
         fig.suptitle("Panel light curves", fontsize=_SUMMED_FONT, y=0.995)
         fig.subplots_adjust(
             left=0.08, right=0.98, bottom=0.06, top=0.90,
@@ -2081,10 +2084,10 @@ class ACSDataAnalyzer:
         )
         ax.axvline(bb_start - t0, color="k", ls="--", lw=_SUMMED_DASH_LW, zorder=4)
         ax.axvline(bb_stop - t0, color="k", ls="--", lw=_SUMMED_DASH_LW, zorder=4)
-        _frame_lc_window(ax, lc, t0)
-        ax.set_xlabel("Time - T90 center [s]", fontsize=_SUMMED_FONT)
+        _frame_lc_window(ax, lc, t0, half=5.0)
+        ax.set_xlabel("Time [s]", fontsize=_SUMMED_FONT)
         _style_summed_ax(ax)
-        #ax.set_title("Summed light curve and Bayesian blocks")
+        ax.set_title("Summed light curve and Bayesian blocks")
         ax.legend(
             [
                 Line2D([0], [0], color=_PAPER_BLUE, lw=_SUMMED_LW),
@@ -2117,7 +2120,7 @@ class ACSDataAnalyzer:
         if bkg_rate is not None:
             ax.plot(lc.centroids - t0, bkg_rate, color=_PAPER_RED, lw=_SUMMED_LW, zorder=3)
 
-        _frame_lc_window(ax, lc, t0, bkg_rate)
+        _frame_lc_window(ax, lc, t0, bkg_rate, half=5.0)
         snr = selection.get("snr_optimal", np.nan)
         title = f"Selected bins ({method}), n={selected.size}, SNR={snr:.3f}"
         if method == "snr_threshold":
@@ -2126,7 +2129,7 @@ class ACSDataAnalyzer:
                 f"n={selected.size}, SNR={snr:.3f}"
             )
         ax.set_title(title, fontsize=_SUMMED_FONT)
-        ax.set_xlabel("Time - T90 center [s]", fontsize=_SUMMED_FONT)
+        ax.set_xlabel("Time [s]", fontsize=_SUMMED_FONT)
         _style_summed_ax(ax)
         ax.legend(
             [
@@ -2188,7 +2191,7 @@ class ACSDataAnalyzer:
             ],
             ["Observed", "Background", "T90", "Selected bins"],
         )
-        _label_bottom_axes(axes, len(panels), "Time - T90 center [s]")
+        _label_bottom_axes(axes, len(panels), "Time [s]")
         fig.suptitle("Selected bins on each panel", fontsize=_SUMMED_FONT, y=0.995)
         fig.subplots_adjust(
             left=0.08, right=0.98, bottom=0.06, top=0.90,
