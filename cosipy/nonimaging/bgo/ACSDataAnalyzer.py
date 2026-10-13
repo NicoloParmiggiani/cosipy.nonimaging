@@ -290,12 +290,18 @@ def _t90_view(tstart, tstop):
 
 
 def _summed_time_view(results):
-    """Signal edges. The light curve is already seconds from the GRB."""
+    """Center of the 60 s light curve, and the signal edges.
+
+    The stored times are absolute. The plotted zero is the middle of that
+    window, which is the GRB time, not the T90 center.
+    """
+    lc = results["lc_sum"]
+    t0 = 0.5 * (float(lc.lo_edges[0]) + float(lc.hi_edges[-1]))
     t90_start = float(results["signal_tstart"])
     t90_stop = float(results["signal_tstop"])
     bb_start = float(results.get("bb_signal_tstart", t90_start))
     bb_stop = float(results.get("bb_signal_tstop", t90_stop))
-    return 0.0, t90_start, t90_stop, bb_start, bb_stop
+    return t0, t90_start, t90_stop, bb_start, bb_stop
 
 
 def _draw_t90_and_signal(ax, t0, t90_start, t90_stop, _bb_start, _bb_stop):
@@ -2053,7 +2059,7 @@ class ACSDataAnalyzer:
             ],
             ["Observed", "T90"],
         )
-        _label_bottom_axes(axes, len(panels), "Time [s]")
+        _label_bottom_axes(axes, len(panels), "Time - GRB [s]")
         fig.suptitle("Panel light curves", fontsize=_SUMMED_FONT, y=0.995)
         fig.subplots_adjust(
             left=0.08, right=0.98, bottom=0.06, top=0.90,
@@ -2085,7 +2091,7 @@ class ACSDataAnalyzer:
         ax.axvline(bb_start - t0, color="k", ls="--", lw=_SUMMED_DASH_LW, zorder=4)
         ax.axvline(bb_stop - t0, color="k", ls="--", lw=_SUMMED_DASH_LW, zorder=4)
         _frame_lc_window(ax, lc, t0, half=5.0)
-        ax.set_xlabel("Time [s]", fontsize=_SUMMED_FONT)
+        ax.set_xlabel("Time - GRB [s]", fontsize=_SUMMED_FONT)
         _style_summed_ax(ax)
         ax.set_title("Summed light curve and Bayesian blocks")
         ax.legend(
@@ -2129,7 +2135,7 @@ class ACSDataAnalyzer:
                 f"n={selected.size}, SNR={snr:.3f}"
             )
         ax.set_title(title, fontsize=_SUMMED_FONT)
-        ax.set_xlabel("Time [s]", fontsize=_SUMMED_FONT)
+        ax.set_xlabel("Time - GRB [s]", fontsize=_SUMMED_FONT)
         _style_summed_ax(ax)
         ax.legend(
             [
@@ -2191,7 +2197,7 @@ class ACSDataAnalyzer:
             ],
             ["Observed", "Background", "T90", "Selected bins"],
         )
-        _label_bottom_axes(axes, len(panels), "Time [s]")
+        _label_bottom_axes(axes, len(panels), "Time - GRB [s]")
         fig.suptitle("Selected bins on each panel", fontsize=_SUMMED_FONT, y=0.995)
         fig.subplots_adjust(
             left=0.08, right=0.98, bottom=0.06, top=0.90,
