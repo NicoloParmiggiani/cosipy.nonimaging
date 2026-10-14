@@ -215,7 +215,7 @@ class ACSDataAnalyzer:
         if debug:
             self._debug_selection(
                 lc_sum, b, selected, snr, significance, bin_method, snr_threshold,
-                t90_window, signal_window,
+                t90_window,
             )
 
         # 5. The same bins on every panel.
@@ -288,9 +288,8 @@ class ACSDataAnalyzer:
         for p, panel_lc in light_curves.items():
             print(f"    {p}: {panel_lc.counts.sum():.0f} counts")
 
-        fig, axes = self._panel_grid("Step 1: panel light curves")
+        fig, axes, t0 = self._panel_grid("Step 1: panel light curves", lc)
         for ax, (p, panel_lc) in zip(axes, light_curves.items()):
-            t0 = panel_lc.lo_edges[0]
             _plot_rates(ax, panel_lc, t0, **_LC_STYLE)
             ax.set_title(p)
         _show(fig)
@@ -302,11 +301,9 @@ class ACSDataAnalyzer:
         print(f"    T90 window    [{t90_window[0]:.3f}, {t90_window[1]:.3f}] s")
         print(f"    T90 = {t90:.3f} s  (-{t90_err[0]:.3f} / +{t90_err[1]:.3f})")
 
-        t0 = lc_sum.lo_edges[0]
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax, t0 = _t90_axes(t90_window)
         _plot_rates(ax, lc_sum, t0, **_LC_STYLE, label="Summed counts")
-        _plot_rates(ax, bb.bb_lightcurve, t0, color="C3", lw=2, label="Bayesian blocks")
-        _draw_windows(ax, t0, t90_window, signal_window)
+        _plot_rates(ax, bb.bb_lightcurve, t0, color="red", lw=2, label="Bayesian blocks")
         ax.set_title("Step 2: Bayesian Blocks, T90 and signal window")
         ax.legend()
         _show(fig)
@@ -317,9 +314,9 @@ class ACSDataAnalyzer:
             print(f"    {p}: {fit['mask_bkg'].sum()} bins in the fit, "
                   f"mean rate {fit['bkg_rate'].mean():.1f} counts/s")
 
-        fig, axes = self._panel_grid("Step 3: background fit (grey = excluded)")
+        first = next(iter(light_curves.values()))
+        fig, axes, t0 = self._panel_grid("Step 3: background fit (grey = excluded)", first)
         for ax, (p, lc) in zip(axes, light_curves.items()):
-            t0 = lc.lo_edges[0]
             _plot_rates(ax, lc, t0, **_LC_STYLE)
             ax.plot(lc.centroids - t0, bkg_fits[p]["bkg_rate"], **_BKG_STYLE)
             ax.axvspan(signal_window[0] - buffer - t0, signal_window[1] + buffer - t0,
@@ -328,7 +325,7 @@ class ACSDataAnalyzer:
         _show(fig)
 
     def _debug_selection(self, lc_sum, b, selected, snr, significance, bin_method,
-                         snr_threshold, t90_window, signal_window):
+                         snr_threshold, t90_window):
         rule = f"{bin_method} (SNR > {snr_threshold})" if bin_method == "snr_threshold" else bin_method
         d_sel = lc_sum.counts[selected].sum()
         b_sel = b[selected].sum()
@@ -337,14 +334,10 @@ class ACSDataAnalyzer:
         print(f"    d = {d_sel:.1f}, b = {b_sel:.1f}, SNR = {snr:.2f}")
         print(f"    Li & Ma significance in the T90: {significance:.2f}")
 
-        t0 = lc_sum.lo_edges[0]
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.bar(lc_sum.lo_edges[selected] - t0, lc_sum.rates[selected],
-               width=lc_sum.exposure[selected], align="edge",
-               color="C2", alpha=0.5, label="Selected bins")
+        fig, ax, t0 = _t90_axes(t90_window)
+        _shade_bins(ax, lc_sum, selected, t0)
         _plot_rates(ax, lc_sum, t0, **_LC_STYLE, label="Summed counts")
         ax.plot(lc_sum.centroids - t0, b / lc_sum.exposure, **_BKG_STYLE, label="Summed background")
-        _draw_windows(ax, t0, t90_window, signal_window)
         ax.set_title(f"Step 4: {rule}, {selected.size} bins, SNR = {snr:.2f}")
         ax.legend()
         _show(fig)
@@ -365,14 +358,17 @@ class ACSDataAnalyzer:
         ax.legend()
         _show(fig)
 
-    def _panel_grid(self, title):
+    def _panel_grid(self, title, lc):
+        """3 x 2 panel figure, time measured from the center of the light curve."""
+        t0 = 0.5 * (lc.lo_edges[0] + lc.hi_edges[-1])
         fig, axes = plt.subplots(3, 2, figsize=(12, 9), sharex=True)
         fig.suptitle(title)
+        axes[0, 0].set_xlim(-30, 30)
         for ax in axes[-1]:
-            ax.set_xlabel("Time since file start [s]")
+            ax.set_xlabel("Time - window center [s]")
         for ax in axes[:, 0]:
             ax.set_ylabel("Counts / s")
-        return fig, axes.flatten()
+        return fig, axes.flatten(), t0
 
 
 def _show(fig):
@@ -393,10 +389,22 @@ def _plot_rates(ax, lc, t0, **kwargs):
     ax.stairs(lc.rates, edges, baseline=None, **kwargs)
 
 
-def _draw_windows(ax, t0, t90_window, signal_window):
-    """Green band for the T90, x axis zoomed on the signal window."""
+def _t90_axes(t90_window):
+    """Figure centered on the T90 (+/- 5 s), with the T90 as a light green band."""
+    t0 = 0.5 * (t90_window[0] + t90_window[1])
+    fig, ax = plt.subplots(figsize=(10, 6))
     ax.axvspan(t90_window[0] - t0, t90_window[1] - t0, color="#b7e4c7", zorder=0, label="T90")
-    margin = max(5.0, signal_window[1] - signal_window[0])
-    ax.set_xlim(signal_window[0] - t0 - margin, signal_window[1] - t0 + margin)
-    ax.set_xlabel("Time since file start [s]")
+    ax.set_xlim(-5, 5)
+    ax.set_xlabel("Time - T90 center [s]")
     ax.set_ylabel("Counts / s")
+    return fig, ax, t0
+
+
+def _shade_bins(ax, lc, indices, t0):
+    """Dark green full-height band over each run of consecutive selected bins."""
+    label = "Selected bins"
+    for run in np.split(indices, np.flatnonzero(np.diff(indices) != 1) + 1):
+        if run.size:
+            ax.axvspan(lc.lo_edges[run[0]] - t0, lc.hi_edges[run[-1]] - t0,
+                       color="#1b7f3b", alpha=0.6, zorder=1, label=label)
+            label = None
