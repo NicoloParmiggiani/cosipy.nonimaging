@@ -16,8 +16,6 @@ Pipeline of ``ACSDataAnalyzer.extract_source_data_from_fits``:
 With ``debug=True`` every step prints a short summary and draws one figure.
 """
 
-import os
-
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
@@ -99,13 +97,7 @@ def _li_ma_significance(lc, t90_window):
 
 
 class ACSDataAnalyzer:
-    """Run the pipeline described in the module docstring.
-
-    ``output_dir``: if given, debug figures are also saved there as PNG.
-    """
-
-    def __init__(self, output_dir=None):
-        self.output_dir = output_dir
+    """Run the pipeline described in the module docstring."""
 
     # ------------------------------------------------------------------
     # Pipeline
@@ -121,7 +113,6 @@ class ACSDataAnalyzer:
         bkg_buffer=1.0,
         bkg_order=2,
         debug=False,
-        prefix="",
     ):
         """Run the whole pipeline on one FITS file.
 
@@ -132,7 +123,7 @@ class ACSDataAnalyzer:
         light_curves = self.read_fits(fits_path, panels)
         results = self.analyze(
             light_curves, bin_method, snr_threshold, p0,
-            bkg_buffer, bkg_order, debug, prefix,
+            bkg_buffer, bkg_order, debug,
         )
         if results is None:
             return -1, -1, -1, -1
@@ -163,7 +154,6 @@ class ACSDataAnalyzer:
         bkg_buffer=1.0,
         bkg_order=2,
         debug=False,
-        prefix="",
     ):
         """Steps 1-5 on a dict ``panel -> TimeBins``. Returns None on failure."""
         if bin_method not in BIN_METHODS:
@@ -175,7 +165,7 @@ class ACSDataAnalyzer:
         d = sum(np.asarray(lc.counts, dtype=float) for lc in light_curves.values())
         lc_sum = TimeBins(d, first.lo_edges, first.hi_edges, first.exposure)
         if debug:
-            self._debug_light_curves(light_curves, prefix)
+            self._debug_light_curves(light_curves)
 
         # 2. Bayesian Blocks on the sum: signal window, and the T90 inside it.
         try:
@@ -189,7 +179,7 @@ class ACSDataAnalyzer:
             print(f"WARNING: Bayesian blocks failed on the summed light curve: {exc}")
             return None
         if debug:
-            self._debug_bayesian_blocks(lc_sum, bb, t90, t90_err, t90_window, signal_window, prefix)
+            self._debug_bayesian_blocks(lc_sum, bb, t90, t90_err, t90_window, signal_window)
 
         # 3. Background of every panel. The whole signal window is excluded,
         #    not only the T90, so the burst tails do not enter the fit.
@@ -203,7 +193,7 @@ class ACSDataAnalyzer:
             return None
         b = sum(fit["bkg_counts"] for fit in bkg_fits.values())
         if debug:
-            self._debug_background(light_curves, bkg_fits, signal_window, bkg_buffer, prefix)
+            self._debug_background(light_curves, bkg_fits, signal_window, bkg_buffer)
 
         # 4. Bins chosen once, on the summed d and b.
         if bin_method == "t90":
@@ -220,14 +210,14 @@ class ACSDataAnalyzer:
         if debug:
             self._debug_selection(
                 lc_sum, b, selected, snr, significance, bin_method, snr_threshold,
-                t90_window, signal_window, prefix,
+                t90_window, signal_window,
             )
 
         # 5. The same bins on every panel.
         s_counts = np.array([light_curves[p].counts[selected].sum() for p in panels])
         b_counts = np.array([bkg_fits[p]["bkg_counts"][selected].sum() for p in panels])
         if debug:
-            self._debug_panel_counts(panels, s_counts, b_counts, prefix)
+            self._debug_panel_counts(panels, s_counts, b_counts)
 
         return {
             "panels": panels,
@@ -285,7 +275,7 @@ class ACSDataAnalyzer:
     # Debug output: one print and one figure per pipeline step
     # ------------------------------------------------------------------
 
-    def _debug_light_curves(self, light_curves, prefix):
+    def _debug_light_curves(self, light_curves):
         lc = next(iter(light_curves.values()))
         print("[1] Light curves")
         print(f"    {lc.size} bins, width {np.median(lc.exposure):.4g} s, "
@@ -298,9 +288,9 @@ class ACSDataAnalyzer:
             t0 = panel_lc.lo_edges[0]
             _plot_rates(ax, panel_lc, t0, color="C0")
             ax.set_title(p)
-        self._finish(fig, prefix, "step1_light_curves")
+        _show(fig)
 
-    def _debug_bayesian_blocks(self, lc_sum, bb, t90, t90_err, t90_window, signal_window, prefix):
+    def _debug_bayesian_blocks(self, lc_sum, bb, t90, t90_err, t90_window, signal_window):
         print("[2] Bayesian Blocks on the summed light curve")
         print(f"    {bb.bb_lightcurve.size} blocks")
         print(f"    signal window [{signal_window[0]:.3f}, {signal_window[1]:.3f}] s")
@@ -314,9 +304,9 @@ class ACSDataAnalyzer:
         _draw_windows(ax, t0, t90_window, signal_window)
         ax.set_title("Step 2: Bayesian Blocks, T90 and signal window")
         ax.legend()
-        self._finish(fig, prefix, "step2_bayesian_blocks")
+        _show(fig)
 
-    def _debug_background(self, light_curves, bkg_fits, signal_window, buffer, prefix):
+    def _debug_background(self, light_curves, bkg_fits, signal_window, buffer):
         print("[3] Background fit (bins outside the signal window +/- buffer)")
         for p, fit in bkg_fits.items():
             print(f"    {p}: {fit['mask_bkg'].sum()} bins in the fit, "
@@ -330,10 +320,10 @@ class ACSDataAnalyzer:
             ax.axvspan(signal_window[0] - buffer - t0, signal_window[1] + buffer - t0,
                        color="0.85", zorder=0)
             ax.set_title(p)
-        self._finish(fig, prefix, "step3_background")
+        _show(fig)
 
     def _debug_selection(self, lc_sum, b, selected, snr, significance, bin_method,
-                         snr_threshold, t90_window, signal_window, prefix):
+                         snr_threshold, t90_window, signal_window):
         rule = f"{bin_method} (SNR > {snr_threshold})" if bin_method == "snr_threshold" else bin_method
         d_sel = lc_sum.counts[selected].sum()
         b_sel = b[selected].sum()
@@ -352,9 +342,9 @@ class ACSDataAnalyzer:
         _draw_windows(ax, t0, t90_window, signal_window)
         ax.set_title(f"Step 4: {rule}, {selected.size} bins, SNR = {snr:.2f}")
         ax.legend()
-        self._finish(fig, prefix, "step4_selection")
+        _show(fig)
 
-    def _debug_panel_counts(self, panels, s_counts, b_counts, prefix):
+    def _debug_panel_counts(self, panels, s_counts, b_counts):
         print("[5] Counts in the selected bins")
         print(f"    {'panel':<6}{'S+B':>10}{'B':>10}{'S':>10}")
         for p, s, b in zip(panels, s_counts, b_counts):
@@ -368,7 +358,7 @@ class ACSDataAnalyzer:
         ax.set_ylabel("Counts")
         ax.set_title("Step 5: counts per panel in the selected bins")
         ax.legend()
-        self._finish(fig, prefix, "step5_panel_counts")
+        _show(fig)
 
     def _panel_grid(self, title):
         fig, axes = plt.subplots(3, 2, figsize=(12, 9), sharex=True)
@@ -379,12 +369,11 @@ class ACSDataAnalyzer:
             ax.set_ylabel("Counts / s")
         return fig, axes.flatten()
 
-    def _finish(self, fig, prefix, name):
-        fig.tight_layout()
-        if self.output_dir is not None:
-            fig.savefig(os.path.join(self.output_dir, f"{prefix}_{name}.png"), dpi=150)
-        plt.show()
-        plt.close(fig)
+
+def _show(fig):
+    fig.tight_layout()
+    plt.show()
+    plt.close(fig)
 
 
 def _plot_rates(ax, lc, t0, **kwargs):
