@@ -33,6 +33,11 @@ _ACS_TIME_UNIX_EPOCH = 1735689600.184
 
 BIN_METHODS = ("t90", "snr_threshold", "greedy")
 
+# Style of the debug figures.
+_LC_STYLE = {"color": "blue", "lw": 2}
+_BKG_STYLE = {"color": "red", "lw": 2}
+_FONT_SIZE = 15
+
 
 def counts_snr(d, b):
     """(d - b) / sqrt(b) for observed counts d and background b. Zero where b <= 0."""
@@ -286,7 +291,7 @@ class ACSDataAnalyzer:
         fig, axes = self._panel_grid("Step 1: panel light curves")
         for ax, (p, panel_lc) in zip(axes, light_curves.items()):
             t0 = panel_lc.lo_edges[0]
-            _plot_rates(ax, panel_lc, t0, color="C0")
+            _plot_rates(ax, panel_lc, t0, **_LC_STYLE)
             ax.set_title(p)
         _show(fig)
 
@@ -298,8 +303,8 @@ class ACSDataAnalyzer:
         print(f"    T90 = {t90:.3f} s  (-{t90_err[0]:.3f} / +{t90_err[1]:.3f})")
 
         t0 = lc_sum.lo_edges[0]
-        fig, ax = plt.subplots(figsize=(10, 5))
-        _plot_rates(ax, lc_sum, t0, color="C0", label="Summed counts")
+        fig, ax = plt.subplots(figsize=(10, 6))
+        _plot_rates(ax, lc_sum, t0, **_LC_STYLE, label="Summed counts")
         _plot_rates(ax, bb.bb_lightcurve, t0, color="C3", lw=2, label="Bayesian blocks")
         _draw_windows(ax, t0, t90_window, signal_window)
         ax.set_title("Step 2: Bayesian Blocks, T90 and signal window")
@@ -315,8 +320,8 @@ class ACSDataAnalyzer:
         fig, axes = self._panel_grid("Step 3: background fit (grey = excluded)")
         for ax, (p, lc) in zip(axes, light_curves.items()):
             t0 = lc.lo_edges[0]
-            _plot_rates(ax, lc, t0, color="C0")
-            ax.plot(lc.centroids - t0, bkg_fits[p]["bkg_rate"], color="C3")
+            _plot_rates(ax, lc, t0, **_LC_STYLE)
+            ax.plot(lc.centroids - t0, bkg_fits[p]["bkg_rate"], **_BKG_STYLE)
             ax.axvspan(signal_window[0] - buffer - t0, signal_window[1] + buffer - t0,
                        color="0.85", zorder=0)
             ax.set_title(p)
@@ -333,12 +338,12 @@ class ACSDataAnalyzer:
         print(f"    Li & Ma significance in the T90: {significance:.2f}")
 
         t0 = lc_sum.lo_edges[0]
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig, ax = plt.subplots(figsize=(10, 6))
         ax.bar(lc_sum.lo_edges[selected] - t0, lc_sum.rates[selected],
                width=lc_sum.exposure[selected], align="edge",
                color="C2", alpha=0.5, label="Selected bins")
-        _plot_rates(ax, lc_sum, t0, color="C0", label="Summed counts")
-        ax.plot(lc_sum.centroids - t0, b / lc_sum.exposure, color="C3", label="Summed background")
+        _plot_rates(ax, lc_sum, t0, **_LC_STYLE, label="Summed counts")
+        ax.plot(lc_sum.centroids - t0, b / lc_sum.exposure, **_BKG_STYLE, label="Summed background")
         _draw_windows(ax, t0, t90_window, signal_window)
         ax.set_title(f"Step 4: {rule}, {selected.size} bins, SNR = {snr:.2f}")
         ax.legend()
@@ -371,6 +376,12 @@ class ACSDataAnalyzer:
 
 
 def _show(fig):
+    for ax in fig.axes:
+        ax.xaxis.label.set_fontsize(_FONT_SIZE)
+        ax.yaxis.label.set_fontsize(_FONT_SIZE)
+        ax.tick_params(axis="both", labelsize=_FONT_SIZE)
+        if ax.get_legend() is not None:
+            ax.legend(fontsize=_FONT_SIZE)
     fig.tight_layout()
     plt.show()
     plt.close(fig)
@@ -383,10 +394,8 @@ def _plot_rates(ax, lc, t0, **kwargs):
 
 
 def _draw_windows(ax, t0, t90_window, signal_window):
-    """Green band for the T90, dashed lines for the signal window, zoomed on them."""
+    """Green band for the T90, x axis zoomed on the signal window."""
     ax.axvspan(t90_window[0] - t0, t90_window[1] - t0, color="#b7e4c7", zorder=0, label="T90")
-    for t in signal_window:
-        ax.axvline(t - t0, color="k", ls="--", lw=1)
     margin = max(5.0, signal_window[1] - signal_window[0])
     ax.set_xlim(signal_window[0] - t0 - margin, signal_window[1] - t0 + margin)
     ax.set_xlabel("Time since file start [s]")
