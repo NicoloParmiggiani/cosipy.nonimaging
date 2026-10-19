@@ -578,14 +578,16 @@ while True:
     ACS_Y0_0 = 0.
     ACS_Y0_1 = 0.
     ACS_Y0_2 = 0.
-
+    ACS_D0_0 = 0.
+    ACS_D1_0 = 0.
+    
     Event = 0
     FirstHit = True
 
 
-df = pd.DataFrame({"timestamp[s]": Time,"ACS_z1":Energy_Z1,"ACS_z0":Energy_Z0
-               ,"ACS_x1":Energy_X1,"ACS_x0":Energy_X0,
-               "ACS_y1":Energy_Y1,"ACS_y0":Energy_Y0,
+df = pd.DataFrame({"timestamp[s]": Time,"ACS-A-Z1":Energy_Z1,"ACS-A-Z0":Energy_Z0
+               ,"ACS-C-X1":Energy_X1,"ACS-C-X0":Energy_X0,
+               "ACS-B-Y1":Energy_Y1,"ACS-B-Y0":Energy_Y0,
                "latX":LatX,"lonX":LonX,"latZ":LatZ,"lonZ":LonZ })
 
 df['datetime']= pd.to_datetime(df["timestamp[s]"],unit="s")
@@ -600,7 +602,7 @@ df.to_csv(output_file, index=True)
 ACS_data_seconds = {}
 
 for col in df.columns:
-    if col.startswith("ACS_"):
+    if col.startswith("ACS-"):
         filtered_data = df[df[col] > 0][[col]]
         times_in_seconds = filtered_data.index.map(lambda x: x.timestamp())
         ACS_data_seconds[col] = np.array(times_in_seconds)
