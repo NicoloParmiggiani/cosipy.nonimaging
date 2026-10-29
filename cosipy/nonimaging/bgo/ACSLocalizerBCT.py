@@ -533,7 +533,7 @@ class ACSLocalizerBCT:
             true_coord.b.to(u.deg).value,
             color="red",
             transform=ax.get_transform("world"),
-            s=2,
+            s=4,
             label="True source",
         )
 
@@ -543,7 +543,7 @@ class ACSLocalizerBCT:
             best_loc.b.to(u.deg).value,
             color="blue",
             transform=ax.get_transform("world"),
-            s=2,
+            s=4,
             label="Best localization",
         )
 
@@ -827,11 +827,12 @@ class ACSLocalizerBCT:
                 label=rf"$\sigma_{{\rm sys}}={sigma_deg:g}^\circ$",
             )
         plt.plot(values, values, "--", color="black", linewidth=1.5, label="Perfect calibration")
-        plt.xlabel("Confidence Level")
-        plt.ylabel("Fraction contained")
+        plt.xlabel("Confidence Level", fontsize=15)
+        plt.ylabel("Fraction contained", fontsize=15)
         plt.xlim(0, 1)
         plt.ylim(0, 1)
-        plt.legend()
+        plt.legend(fontsize=10)
+        plt.tick_params(axis='both', labelsize=15)
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
         if show:
