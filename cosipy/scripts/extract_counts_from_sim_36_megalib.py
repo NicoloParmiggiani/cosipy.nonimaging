@@ -51,7 +51,7 @@ else:
 
 #by default Megalib is noising the energy. Uncomment below if you want to assume perfect energy resolution
 #Geometry.ActivateNoising(False);
-if noise=="0":
+if noise == "false":
     Geometry.ActivateNoising(False)
 
 Reader = M.MFileEventsSim(Geometry)
@@ -129,7 +129,7 @@ while True:
     
         for i in range(Event.GetNHTs()):
             Hit = Event.GetHTAt(i)
-            if Hit.GetDetectorType() == 8:
+            if Hit.GetDetectorType() == 4 or Hit.GetDetectorType() == 8:
                 
                 pos = Hit.GetPosition()
                  
@@ -200,7 +200,7 @@ while True:
                     ACS_X0_1+=(Hit.GetEnergy())
                 elif detector.GetString() == "ACS_X0_2":
                     ACS_X0_2+=(Hit.GetEnergy())
-                    
+                 
                 #D pannels
                 elif detector.GetString() == "ACS_D0_0":
                     ACS_D0_0+=(Hit.GetEnergy())
@@ -208,10 +208,7 @@ while True:
                     ACS_D1_0+=(Hit.GetEnergy())
                     
                 else:
-                    print(detector)
-                    print(str(x)+" "+str(y)+" "+str(z))
-                    print("coordinate not found")
-                    sys.exit()
+                    continue
 		
                 if FirstHit:
 		    #time
@@ -231,7 +228,7 @@ while True:
 
                     FirstHit = False
             
-    
+
     #bot neg
     if ACS_Z0_0 >= min_energy and ACS_Z0_0 <= max_energy:
         Energy_Z1.append(np.float32(0))
@@ -377,7 +374,7 @@ while True:
         Energy_Z1.append(np.float32(0))
         Energy_Z0.append(np.float32(0))
         Energy_Y1.append(np.float32(0))
-        Energy_X1.append(np.float32(ACS_X1_0))
+        Energy_X1.append(np.float32(ACS_D1_0))
         Energy_Y0.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
@@ -465,7 +462,7 @@ while True:
         
     # D0 is added to X0 
     if ACS_D0_0 >= min_energy and ACS_D0_0 <= max_energy:
-        Energy_X0.append(np.float32(ACS_X0_0))
+        Energy_X0.append(np.float32(ACS_D0_0))
         Energy_Z1.append(np.float32(0))
         Energy_Z0.append(np.float32(0))
         Energy_Y1.append(np.float32(0))
