@@ -91,6 +91,10 @@ ACS_Y0_2 = 0.
 
 ACS_D0_0 = 0.
 ACS_D1_0 = 0.
+
+BTO1 = 0.
+BTO2 = 0.
+bto_threshold = 30.
  
 time = 0.
 latX = 0.
@@ -106,6 +110,8 @@ Energy_X1 = []
 Energy_X0 = []
 Energy_Y1 = []
 Energy_Y0 = []
+Energy_BTO1 = []
+Energy_BTO2 = []
 LatX = []
 LonX = []
 LatZ = []
@@ -206,6 +212,15 @@ while True:
                     ACS_D0_0+=(Hit.GetEnergy())
                 elif detector.GetString() == "ACS_D1_0":
                     ACS_D1_0+=(Hit.GetEnergy())
+
+                #BTO
+                elif detector.GetString() == "BTO":
+                    if x > 0:
+                        BTO1+=(Hit.GetEnergy())
+                    elif x < 0:
+                        BTO2+=(Hit.GetEnergy())
+                    else:
+                        continue
                     
                 else:
                     continue
@@ -237,6 +252,8 @@ while True:
         Energy_X0.append(np.float32(0))
         Energy_Y1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -249,6 +266,8 @@ while True:
         Energy_X0.append(np.float32(0))
         Energy_Y1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -261,6 +280,8 @@ while True:
         Energy_X0.append(np.float32(0))
         Energy_Y1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -273,6 +294,8 @@ while True:
         Energy_X0.append(np.float32(0))
         Energy_Y1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -293,6 +316,8 @@ while True:
         Energy_X1.append(np.float32(0))
         Energy_X0.append(np.float32(0))
         Energy_Y1.append(np.float32(0)) 
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -313,6 +338,8 @@ while True:
         Energy_X1.append(np.float32(0))
         Energy_X0.append(np.float32(0))
         Energy_Y0.append(np.float32(0))  
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -326,6 +353,8 @@ while True:
         Energy_X0.append(np.float32(0))
         Energy_Y1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -338,6 +367,8 @@ while True:
         Energy_X0.append(np.float32(0))
         Energy_Y1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -350,6 +381,8 @@ while True:
         Energy_X0.append(np.float32(0))
         Energy_Y1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -362,6 +395,8 @@ while True:
         Energy_X0.append(np.float32(0))
         Energy_Y1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -376,6 +411,8 @@ while True:
         Energy_Y1.append(np.float32(0))
         Energy_X1.append(np.float32(ACS_D1_0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -389,6 +426,8 @@ while True:
         Energy_X0.append(np.float32(0))
         Energy_Y1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -402,6 +441,8 @@ while True:
         Energy_X0.append(np.float32(0))
         Energy_Y1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -415,6 +456,8 @@ while True:
         Energy_X0.append(np.float32(0))
         Energy_Y1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -428,6 +471,8 @@ while True:
         Energy_X0.append(np.float32(0))
         Energy_X1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -441,6 +486,8 @@ while True:
         Energy_X0.append(np.float32(0))
         Energy_X1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -454,6 +501,8 @@ while True:
         Energy_X0.append(np.float32(0))
         Energy_X1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -468,6 +517,8 @@ while True:
         Energy_Y1.append(np.float32(0))
         Energy_X1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -481,6 +532,8 @@ while True:
         Energy_Y1.append(np.float32(0))
         Energy_X1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -494,6 +547,8 @@ while True:
         Energy_Y1.append(np.float32(0))
         Energy_X1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -507,6 +562,8 @@ while True:
         Energy_Y1.append(np.float32(0))
         Energy_X1.append(np.float32(0))
         Energy_Y0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -520,6 +577,8 @@ while True:
         Energy_Y1.append(np.float32(0))
         Energy_X1.append(np.float32(0))
         Energy_X0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -533,6 +592,8 @@ while True:
         Energy_Y1.append(np.float32(0))
         Energy_X1.append(np.float32(0))
         Energy_X0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -546,6 +607,39 @@ while True:
         Energy_Y1.append(np.float32(0))
         Energy_X1.append(np.float32(0))
         Energy_X0.append(np.float32(0))
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(0))
+        Time.append(time)
+        LatX.append(latX)
+        LonX.append(lonX)
+        LatZ.append(latZ)
+        LonZ.append(lonZ)
+
+    #BTO
+    if BTO1 > bto_threshold:
+        Energy_BTO1.append(np.float32(BTO1))
+        Energy_BTO2.append(np.float32(0))
+        Energy_Z1.append(np.float32(0))
+        Energy_Z0.append(np.float32(0))
+        Energy_X1.append(np.float32(0))
+        Energy_X0.append(np.float32(0))
+        Energy_Y1.append(np.float32(0))
+        Energy_Y0.append(np.float32(0))
+        Time.append(time)
+        LatX.append(latX)
+        LonX.append(lonX)
+        LatZ.append(latZ)
+        LonZ.append(lonZ)
+
+    if BTO2 > bto_threshold:
+        Energy_BTO1.append(np.float32(0))
+        Energy_BTO2.append(np.float32(BTO2))
+        Energy_Z1.append(np.float32(0))
+        Energy_Z0.append(np.float32(0))
+        Energy_X1.append(np.float32(0))
+        Energy_X0.append(np.float32(0))
+        Energy_Y1.append(np.float32(0))
+        Energy_Y0.append(np.float32(0))
         Time.append(time)
         LatX.append(latX)
         LonX.append(lonX)
@@ -577,6 +671,8 @@ while True:
     ACS_Y0_2 = 0.
     ACS_D0_0 = 0.
     ACS_D1_0 = 0.
+    BTO1 = 0.
+    BTO2 = 0.
     
     Event = 0
     FirstHit = True
@@ -585,6 +681,7 @@ while True:
 df = pd.DataFrame({"timestamp[s]": Time,"ACS-A-Z1":Energy_Z1,"ACS-A-Z0":Energy_Z0
                ,"ACS-C-X1":Energy_X1,"ACS-C-X0":Energy_X0,
                "ACS-B-Y1":Energy_Y1,"ACS-B-Y0":Energy_Y0,
+               "BTO1":Energy_BTO1,"BTO2":Energy_BTO2,
                "latX":LatX,"lonX":LonX,"latZ":LatZ,"lonZ":LonZ })
 
 df['datetime']= pd.to_datetime(df["timestamp[s]"],unit="s")
@@ -599,7 +696,7 @@ df.to_csv(output_file, index=True)
 ACS_data_seconds = {}
 
 for col in df.columns:
-    if col.startswith("ACS-"):
+    if col.startswith("ACS-") or col.startswith("BTO"):
         filtered_data = df[df[col] > 0][[col]]
         times_in_seconds = filtered_data.index.map(lambda x: x.timestamp())
         ACS_data_seconds[col] = np.array(times_in_seconds)
