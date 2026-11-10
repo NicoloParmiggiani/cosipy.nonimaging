@@ -7,6 +7,18 @@ from astropy import units as u
 from scoords import Attitude, SpacecraftFrame
 from astropy.coordinates import SkyCoord, Galactic
 
+from cosipy.nonimaging.bgo.panels import to_array
+
+# Column order of the panels in the chi2 LUT files
+LUT_PANEL_ORDER = (
+    "ACS-A-Z1",
+    "ACS-A-Z0",
+    "ACS-C-X1",
+    "ACS-C-X0",
+    "ACS-B-Y1",
+    "ACS-B-Y0",
+)
+
 class BGOLocalizerChi2:
     """
     Class for GRB localization using three BGO lookup tables
@@ -25,9 +37,8 @@ class BGOLocalizerChi2:
 
     Notes
     -----
-    The input count arrays must follow the detector order used by the LUTs:
-
-        ['BGO_Z1', 'BGO_Z0', 'BGO_X1', 'BGO_X0', 'BGO_Y1', 'BGO_Y0']
+    The input counts are dicts panel name -> value. They are reordered
+    internally to the LUT column order, ``LUT_PANEL_ORDER``.
     """
     
     def __init__(self, soft_lut_path, medium_lut_path, hard_lut_path, nside=32):
@@ -106,10 +117,10 @@ class BGOLocalizerChi2:
 
         Parameters
         ----------
-        s_counts : ndarray
-            Observed detector counts.
-        b_counts : ndarray
-            Background detector counts.
+        s_counts : dict
+            Observed detector counts, panel name -> value.
+        b_counts : dict
+            Background detector counts, panel name -> value.
         cont_area_level : float, optional
             Confidence level used to compute the containment area
             (default is 0.9, i.e., 90%).
@@ -134,6 +145,9 @@ class BGOLocalizerChi2:
         """
 
         spectrum_keys = ["soft", "medium", "hard"]
+
+        s_counts = to_array(s_counts, LUT_PANEL_ORDER)
+        b_counts = to_array(b_counts, LUT_PANEL_ORDER)
         
         chi2_by_spectrum = {}
         min_chi2_values = []

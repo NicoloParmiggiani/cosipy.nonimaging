@@ -7,6 +7,12 @@ import h5py
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+from cosipy.nonimaging.bgo.panels import (
+    LEGACY_PANEL_KEYS,
+    PANEL_NAMES,
+    panel_name,
+)
+
 class ACSPrepareL2:
 
     """
@@ -64,6 +70,10 @@ class ACSPrepareL2:
     ):
         """
         Read ACS light curves from an HDF5 file.
+
+        ``detector_list`` accepts the names in PANEL_NAMES or the legacy
+        short keys; each dataset is looked up under either name, and the
+        counts are returned keyed by PANEL_NAMES.
         """
 
         results = []
@@ -100,8 +110,9 @@ class ACSPrepareL2:
 
                 for det in detector_list:
 
-                    data = f[det][indices, 0]
-                    counts_per_detector[det] = data
+                    panel = panel_name(det)
+                    dataset = panel if panel in f else LEGACY_PANEL_KEYS[panel]
+                    counts_per_detector[panel] = f[dataset][indices, 0]
 
                 results.append({
                     "name": name,
@@ -176,7 +187,9 @@ class ACSPrepareL2:
         Parameters
         ----------
         input_path : str or Path
-            Path to the NPZ file containing one array for each BGO panel.
+            Path to the NPZ file containing one array for each BGO panel,
+            keyed either by the panel names in PANEL_NAMES or by the
+            legacy short keys (x0, x1, y0, y1, z0, z1).
 
         event_time : float
             Absolute event time in seconds.
@@ -188,7 +201,7 @@ class ACSPrepareL2:
         Returns
         -------
         dict
-            Dictionary with keys z1, z0, x1, x0, y1, y0.
+            Dictionary keyed by the panel names in PANEL_NAMES.
             Each value is a NumPy array containing the event times inside
             the interval:
 
@@ -203,8 +216,6 @@ class ACSPrepareL2:
         if half_window <= 0:
             raise ValueError("half_window must be greater than zero")
 
-        panel_names = ["z1", "z0", "x1", "x0", "y1", "y0"]
-
         window_start = float(event_time) - float(half_window)
         window_end = float(event_time) + float(half_window)
 
@@ -212,10 +223,17 @@ class ACSPrepareL2:
 
         with np.load(input_path) as data:
 
+            panel_keys = {}
+            for panel in PANEL_NAMES:
+                if panel in data.files:
+                    panel_keys[panel] = panel
+                elif LEGACY_PANEL_KEYS[panel] in data.files:
+                    panel_keys[panel] = LEGACY_PANEL_KEYS[panel]
+
             missing_panels = [
                 panel
-                for panel in panel_names
-                if panel not in data.files
+                for panel in PANEL_NAMES
+                if panel not in panel_keys
             ]
 
             if missing_panels:
@@ -223,10 +241,10 @@ class ACSPrepareL2:
                     f"Missing panels in {input_path.name}: {missing_panels}"
                 )
 
-            for panel in panel_names:
+            for panel in PANEL_NAMES:
 
                 times = np.asarray(
-                    data[panel],
+                    data[panel_keys[panel]],
                     dtype=float,
                 )
 
@@ -256,7 +274,9 @@ class ACSPrepareL2:
         Parameters
         ----------
         grb_path : str or Path
-            Path to the GRB CSV file.
+            Path to the GRB CSV file. Energy columns are named either
+            after the panels in PANEL_NAMES or with the legacy format
+            bgo_<short key>[keV].
 
         event_time : float
             Absolute time used to shift the relative GRB timestamps.
@@ -264,8 +284,7 @@ class ACSPrepareL2:
         Returns
         -------
         dict
-            Dictionary with the following keys:
-            z1, z0, x1, x0, y1, y0.
+            Dictionary keyed by the panel names in PANEL_NAMES.
 
             Each value is a NumPy array containing:
             event_time + timestamp[s]
@@ -279,12 +298,12 @@ class ACSPrepareL2:
         grb_df = pd.read_csv(grb_path)
 
         panel_columns = {
-            "z1": "bgo_z1[keV]",
-            "z0": "bgo_z0[keV]",
-            "x1": "bgo_x1[keV]",
-            "x0": "bgo_x0[keV]",
-            "y1": "bgo_y1[keV]",
-            "y0": "bgo_y0[keV]",
+            panel: (
+                panel
+                if panel in grb_df.columns
+                else f"bgo_{LEGACY_PANEL_KEYS[panel]}[keV]"
+            )
+            for panel in PANEL_NAMES
         }
 
         required_columns = ["timestamp[s]", *panel_columns.values()]
@@ -322,7 +341,7 @@ class ACSPrepareL2:
 
     def plot_lc(self,lc_data,detector_name):
      
-        det = detector_name
+        det = panel_name(detector_name)
 
         # --- ORIGINAL ---
         time = lc_data["time"]
@@ -389,7 +408,7 @@ class ACSPrepareL2:
         Parameters
         ----------
         panel_times : dict
-            Dictionary with keys z1, z0, x1, x0, y1, y0.
+            Dictionary keyed by the panel names in PANEL_NAMES.
             Each value contains the event timestamps for one panel.
 
         event_time : float
@@ -410,7 +429,7 @@ class ACSPrepareL2:
             Figure, axes, and binned counts for each panel.
         """
 
-        panel_order = ["z1", "z0", "x1", "x0", "y1", "y0"]
+        panel_order = PANEL_NAMES
 
         panel_data = {
             panel: np.asarray(panel_times.get(panel, []), dtype=float)
@@ -473,7 +492,7 @@ class ACSPrepareL2:
             )
 
             ax.set_title(
-                f"{panel.upper()} — {times.size:,} events"
+                f"{panel} — {times.size:,} events"
             )
             ax.set_ylabel("Rate [counts/s]")
             ax.grid(alpha=0.3)
@@ -505,7 +524,7 @@ class ACSPrepareL2:
 
         all_ok = True
 
-        for det in detector_list:
+        for det in map(panel_name, detector_list):
             original = np.sum(acs_lc["counts"][det])
             rebinned = np.sum(acs_lc["counts_reb"][det])
             diff = rebinned - original
@@ -578,18 +597,9 @@ class ACSPrepareL2:
             # (N_time_bins, 6)
             counts = data["COUNT"]
 
-            panel_names = [
-                "SCBA_A0",
-                "SCBA_A1",
-                "SCBB_A0",
-                "SCBB_A1",
-                "SCBC_A0",
-                "SCBC_A1",
-            ]
-
             panels = {
                 panel_name: counts[:, i]
-                for i, panel_name in enumerate(panel_names)
+                for i, panel_name in enumerate(PANEL_NAMES)
             }
 
             # =========================
@@ -740,20 +750,9 @@ class ACSPrepareL2:
         # =========================
         cr = acs_lc["counts_reb"]
 
-        x0 = np.asarray(cr["x0"], dtype=np.int16)
-        x1 = np.asarray(cr["x1"], dtype=np.int16)
-        y0 = np.asarray(cr["y0"], dtype=np.int16)
-        y1 = np.asarray(cr["y1"], dtype=np.int16)
-        z0 = np.asarray(cr["z0"], dtype=np.int16)
-        z1 = np.asarray(cr["z1"], dtype=np.int16)
-        
         final_counts = np.column_stack([
-            z1,
-            z0,
-            y1,
-            y0,
-            x1,
-            x0,
+            np.asarray(cr[panel], dtype=np.int16)
+            for panel in PANEL_NAMES
         ]).astype(np.int16)
 
         zeros = np.zeros(n, dtype=np.int16)

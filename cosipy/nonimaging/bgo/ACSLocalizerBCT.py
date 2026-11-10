@@ -9,6 +9,18 @@ from mhealpy import HealpixMap
 from bctools.loc import TSMap, SkyMap, NormLocLike
 from scoords import Attitude, SpacecraftFrame
 
+from cosipy.nonimaging.bgo.panels import to_array
+
+# Panel order of the detectors in the bctools IRF
+IRF_PANEL_ORDER = (
+    "ACS-C-X0",
+    "ACS-C-X1",
+    "ACS-B-Y0",
+    "ACS-B-Y1",
+    "ACS-A-Z0",
+    "ACS-A-Z1",
+)
+
 
 class ACSLocalizerBCT:
     """
@@ -27,11 +39,8 @@ class ACSLocalizerBCT:
 
     Notes
     -----
-    The input counts (s_counts and b_counts) must follow the correct order
-    of BGO detector panels to match the LUT definition:
-
-        
-        ['BGO_Z1', 'BGO_Z0', 'BGO_X1', 'BGO_X0', 'BGO_Y1', 'BGO_Y0']
+    The input counts (s_counts and b_counts) are dicts panel name -> value.
+    They are reordered internally to the IRF panel order, ``IRF_PANEL_ORDER``.
     """
 
     def __init__(self, soft_loctable_path, medium_loctable_path, hard_loctable_path, output_dir, nside=64 ):
@@ -61,10 +70,10 @@ class ACSLocalizerBCT:
 
         Parameters
         ----------
-        s_counts : list or np.ndarray
-            Source counts.
-        b_counts : list or np.ndarray
-            Background counts.
+        s_counts : dict
+            Source counts, panel name -> value.
+        b_counts : dict
+            Background counts, panel name -> value.
         attitude : Attitude or None
             Spacecraft attitude. If provided, `l`/`b` are Galactic and
             `theta_out`/`phi_out` are converted back to spacecraft
@@ -79,20 +88,8 @@ class ACSLocalizerBCT:
             Best localization result.
         """
         
-        #s_counts = [100000,2000,2000,2000,2000,2000]
-        #b_counts = [1000,1000,1000,1000,1000,1000]
-        
-        #bgo_z1[keV] 1591
-        #bgo_z0[keV] 605
-        #bgo_x1[keV] 16835
-        #bgo_x0[keV] 257
-        #bgo_y1[keV] 1291
-        #bgo_y0[keV] 797
-                
-        #remap the counts following BGO IRF ['BGO_X0', 'BGO_X1', 'BGO_Y0', 'BGO_Y1', 'BGO_Z0', 'BGO_Z1']
-        #change order of input to follow BGO IRF.  
-        s_counts = s_counts[[3, 2, 5, 4, 1, 0]]
-        b_counts = b_counts[[3, 2, 5, 4, 1, 0]]
+        s_counts = to_array(s_counts, IRF_PANEL_ORDER)
+        b_counts = to_array(b_counts, IRF_PANEL_ORDER)
 
         results = []
     
@@ -215,165 +212,7 @@ class ACSLocalizerBCT:
             plt.show()
 
 
-    def localize_old(self, s_counts, b_counts, attitude=None, conf_level=0.9,duration=1):
-        """
-        Run localization using all LUTs and return the one with the highest TS.
-
-        Parameters
-        ----------
-        s_counts : list or np.ndarray
-            Source counts.
-        b_counts : list or np.ndarray
-            Background counts.
-        attitude : Attitude or None
-            Spacecraft attitude. If provided, output is in Galactic (l, b).
-            If None, output is in instrument coordinates (theta, phi).
-        conf_level : float, optional
-            Confidence level for error region (default = 0.9).
-
-        Returns
-        -------
-        dict
-            Best localization result.
-        """
-        #['BGO_Z1', 'BGO_Z0', 'BGO_X1', 'BGO_X0', 'BGO_Y1', 'BGO_Y0']
-        #remap the counts following BGO IRF ['BGO_X0', 'BGO_X1', 'BGO_Y0', 'BGO_Y1', 'BGO_Z0', 'BGO_Z1']
-        
-        s_counts = [2000,4000,2000,2000,2000]
-        b_counts = [1000,1000,1000,1000,1000]
-        
-        #s_counts = s_counts[[3, 2, 5, 4, 1, 0]]
-        #b_counts = b_counts[[3, 2, 5, 4, 1, 0]]
-        
-        print(s_counts)
-        print(b_counts)
-
-        results = []
-        
-        # The local_loctable contains the expected rates in spacecraft coordinates
-        # We now need to use this to estimate the total expected counts in sky coordinate for
-        # the full duration of an event. 
-        # In this case we simply have a 1 second event and specifying the attitude by a quaternion
-        # ([0,0,0,1] corresponds to the identity rotation). You can have multiple attitude-duration
-        # pairs to correctly model long duration events.
-        
-        print(attitude.as_quat())
-
-        soft_sky_loctable = self.loctables['soft'].to_skyloctable(attitude = attitude.as_quat(), duration = duration,frame='galactic')
-        medium_sky_loctable = self.loctables['medium'].to_skyloctable(attitude = attitude.as_quat(), duration = duration,frame='galactic')
-        hard_sky_loctable = self.loctables['hard'].to_skyloctable(attitude = attitude.as_quat(), duration = duration,frame='galactic')
-
-        #soft_sky_loctable = self.loctables['soft'].to_skyloctable(attitude = [0,0,0,1], duration = duration)
-        #medium_sky_loctable = self.loctables['medium'].to_skyloctable(attitude = [0,0,0,1], duration = duration)
-        #hard_sky_loctable = self.loctables['hard'].to_skyloctable(attitude = [0,0,0,1], duration = duration)
-      
-        self.luts = {
-            "soft": soft_sky_loctable,
-            "medium": medium_sky_loctable,
-            "hard": hard_sky_loctable,
-        }
-
-        for label, lut in self.luts.items():
-
-            lut.set_background(b_counts)
-            lut.set_data(s_counts)
-
-            ts_map = TSMap(nside=self.nside, coordsys="galactic")
-            likelihood = NormLocLike(lut)
-            ts_map.compute(likelihood)
-
-            ts_value = float(np.max(ts_map))
-            best = ts_map.best_loc()
-            
-            print(best)
-
-            cont_area = ts_map.error_area(cont=conf_level).to(u.deg**2)
-            eq_radius = np.sqrt(cont_area / np.pi).to(u.deg)
-            
-            
-            # Default outputs
-            theta_out = -1.0
-            phi_out = -1.0
-            l_out = -1.0
-            b_out = -1.0
-            
-            #best_gal = best.transform_to(Galactic())
-            best_gal = best
-            l_out = float(best_gal.l.deg)
-            b_out = float(best_gal.b.deg)
-
-            """ if attitude is None:
-                # best is assumed to be in local/spacecraft-like coordinates
-                phi = best.spherical.lon.to(u.rad).value
-                lat = best.spherical.lat.to(u.rad).value
-
-                theta_out = np.pi / 2.0 - lat   # zenith
-                phi_out = phi                   # azimuth
-
-                l_out = -1
-                b_out = -1
-
-                out_map = ts_map.data
-
-            else:
-                # interpret best as local coordinates and convert to galactic
-                phi = best.spherical.lon
-                lat = best.spherical.lat
-
-                position_sc = SkyCoord(
-                    lon=phi,
-                    lat=lat,
-                    frame=SpacecraftFrame(attitude=attitude)
-                )
-
-                position_gal = position_sc.transform_to(Galactic())
-                
-                
-                print("position_sc =", position_sc)
-                print("position_sc frame =", position_sc.frame)
-                print("position_sc frame name =", position_sc.frame.name)
-
-                position_gal = position_sc.transform_to(Galactic())
-
-                print("position_gal =", position_gal)
-                print("position_gal frame =", position_gal.frame)
-                print("position_gal frame name =", position_gal.frame.name)
-                print("position_gal class =", type(position_gal))
-
-
-                theta_out = -1
-                phi_out = -1
-                
-                print(position_gal)
-
-                l_out = float(position_gal.l.deg)
-                b_out = float(position_gal.b.deg)
-
-                ts_map_rot = self.rotate_tsmap(ts_map, attitude)
-
-                out_map = HealpixMap(
-                    ts_map_rot,
-                    nside=ts_map.nside,
-                    coordsys=ts_map.coordsys
-                )
-                 """
-                
-                
-            results.append({
-                "theta_out":theta_out,
-                "phi_out":phi_out,
-                "l":l_out,
-                "b":b_out,
-                "label": label,
-                "ts_map": ts_map,
-                "ts_value": ts_value,
-                "sqrt_ts": float(np.sqrt(ts_value)),
-                "cont_area_deg2": float(cont_area.value),
-                "eq_radius_deg": float(eq_radius.value),
-            })
-
-        return max(results, key=lambda r: r["ts_value"])
-
+    
     def plot(self, result, true_coord=None, show=True, save_path=None):
         """
         Plot the TS map from a localization result.

@@ -23,10 +23,10 @@ from bctools.analysis import BayesianBlocksLightcurve
 from gdt.core.background.binned import Polynomial
 from gdt.core.data_primitives import TimeBins
 
+from cosipy.nonimaging.bgo.panels import PANEL_NAMES, panel_name
+
 # Column of the FITS COUNT array for each panel.
-# SCBA is z, SCBB is y, SCBC is x. Face A0 is "1", face A1 is "0".
-_PANEL_INDEX = {"z1": 0, "z0": 1, "y1": 2, "y0": 3, "x1": 4, "x0": 5}
-_DEFAULT_PANELS = ("z1", "z0", "x1", "x0", "y1", "y0")
+_PANEL_INDEX = {p: i for i, p in enumerate(PANEL_NAMES)}
 
 # TT seconds of 2025-01-01 00:00:00.184 UTC. ACS TIME is seconds since then.
 _ACS_TIME_UNIX_EPOCH = 1735689600.184
@@ -113,7 +113,7 @@ class ACSDataAnalyzer:
         fits_path,
         bin_method="t90",
         snr_threshold=3.5,
-        panels=_DEFAULT_PANELS,
+        panels=PANEL_NAMES,
         p0=0.05,
         bkg_buffer=1.0,
         bkg_order=2,
@@ -122,8 +122,9 @@ class ACSDataAnalyzer:
         """Run the whole pipeline on one FITS file.
 
         Returns ``s_counts, b_counts, t90_start_unix, results``, with the
-        counts in the order of ``panels``. Returns ``-1, -1, -1, -1`` when
-        the Bayesian Blocks or a background fit fail.
+        counts as dicts panel -> value for the selected ``panels``, ready to
+        be passed to the localizers. Returns ``-1, -1, -1, -1`` when the
+        Bayesian Blocks or a background fit fail.
         """
         light_curves = self.read_fits(fits_path, panels)
         results = self.analyze(
@@ -135,8 +136,14 @@ class ACSDataAnalyzer:
         t90_start_unix = _ACS_TIME_UNIX_EPOCH + results["t90_window"][0]
         return results["s_counts"], results["b_counts"], t90_start_unix, results
 
-    def read_fits(self, fits_path, panels=_DEFAULT_PANELS):
-        """Step 1. One TimeBins light curve per panel, all on the same time grid."""
+    def read_fits(self, fits_path, panels=PANEL_NAMES):
+        """Step 1. One TimeBins light curve per panel, all on the same time grid.
+
+        ``panels`` accepts the names in PANEL_NAMES or the legacy short keys;
+        the returned dict is keyed by PANEL_NAMES, in that order.
+        """
+        requested = {panel_name(p) for p in panels}
+        panels = [p for p in PANEL_NAMES if p in requested]
         with fits.open(fits_path) as hdul:
             # A file without the observation header must fail here.
             hdul[0].header["DATE-OBS"]
@@ -219,8 +226,8 @@ class ACSDataAnalyzer:
             )
 
         # 5. The same bins on every panel.
-        s_counts = np.array([light_curves[p].counts[selected].sum() for p in panels])
-        b_counts = np.array([bkg_fits[p]["bkg_counts"][selected].sum() for p in panels])
+        s_counts = {p: float(light_curves[p].counts[selected].sum()) for p in panels}
+        b_counts = {p: float(bkg_fits[p]["bkg_counts"][selected].sum()) for p in panels}
         if debug:
             self._debug_panel_counts(panels, s_counts, b_counts)
 
@@ -344,14 +351,15 @@ class ACSDataAnalyzer:
 
     def _debug_panel_counts(self, panels, s_counts, b_counts):
         print("[5] Counts in the selected bins")
-        print(f"    {'panel':<6}{'S+B':>10}{'B':>10}{'S':>10}")
-        for p, s, b in zip(panels, s_counts, b_counts):
-            print(f"    {p:<6}{s:>10.1f}{b:>10.1f}{s - b:>10.1f}")
+        print(f"    {'panel':<10}{'S+B':>10}{'B':>10}{'S':>10}")
+        for p in panels:
+            s, b = s_counts[p], b_counts[p]
+            print(f"    {p:<10}{s:>10.1f}{b:>10.1f}{s - b:>10.1f}")
 
         x = np.arange(len(panels))
         fig, ax = plt.subplots(figsize=(8, 4))
-        ax.bar(x - 0.2, s_counts, width=0.4, label="S+B")
-        ax.bar(x + 0.2, b_counts, width=0.4, label="B")
+        ax.bar(x - 0.2, [s_counts[p] for p in panels], width=0.4, label="S+B")
+        ax.bar(x + 0.2, [b_counts[p] for p in panels], width=0.4, label="B")
         ax.set_xticks(x, panels)
         ax.set_ylabel("Counts")
         ax.set_title("Step 5: counts per panel in the selected bins")
