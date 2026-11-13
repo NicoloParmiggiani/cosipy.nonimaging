@@ -711,11 +711,11 @@ class ACSLocalizerBCT:
         below it at high confidence: the core is already wide enough and
         what is missing is the tail (far outliers).
 
-        Every combination with ``sigma_tail > sigma_core`` is tested, plus
-        the single Gaussians (``f = 0``) for comparison. Each combination
-        is scored with the maximum distance of the P-P curve from the
-        diagonal (``ks``). The Gaussian smoothed maps are computed once per
-        GRB and sigma, then mixed for every ``f``.
+        Every combination with ``sigma_tail > sigma_core`` is tested. Each
+        combination is scored with the maximum distance of the P-P curve
+        from the diagonal (``ks``). The unsmoothed (original) curve is
+        computed and drawn for reference. The Gaussian smoothed maps are
+        computed once per GRB and sigma, then mixed for every ``f``.
 
         Parameters
         ----------
@@ -729,7 +729,7 @@ class ACSLocalizerBCT:
             Confidence levels. Default is 0, 0.01, ..., 1.00.
         n_best : int
             Number of best core+tail kernels drawn in the figure, together
-            with the best single Gaussian.
+            with the original curve.
         show : bool
             If True, display the figure.
 
@@ -739,14 +739,15 @@ class ACSLocalizerBCT:
             ``grid``: one dict per kernel (``sigma_core_deg``,
             ``sigma_tail_deg``, ``tail_frac``, ``ks``, ``coverage_50``,
             ``coverage_90``, ``N``, ``confidence_levels``, ``fraction``),
-            sorted by ``ks``; ``best`` (best core+tail kernel),
-            ``best_single`` (best single Gaussian), ``values``, ``bands``, ``N``.
+            sorted by ``ks``; ``best`` (best kernel), ``original`` (same
+            keys, unsmoothed maps), ``values``, ``bands``, ``N``.
         """
         if values is None:
             values = np.linspace(0.0, 1.0, 101)
         prepared = self.prepare_skymaps(results)
 
-        kernels = [(float(c), 0.0, 0.0) for c in sigma_core_deg]
+        # first kernel: no smoothing, the original curve
+        kernels = [(0.0, 0.0, 0.0)]
         kernels += [
             (float(c), float(t), float(f))
             for c in sigma_core_deg
@@ -754,6 +755,8 @@ class ACSLocalizerBCT:
             for f in tail_frac
             if t > c and 0.0 < f <= 1.0
         ]
+        if len(kernels) == 1:
+            raise ValueError("No core+tail kernel to test: need sigma_tail > sigma_core and 0 < tail_frac <= 1")
         sigmas = sorted({c for c, _, _ in kernels} | {t for _, t, f in kernels if f > 0})
 
         cls = np.full((len(kernels), len(prepared)), np.nan)
@@ -780,29 +783,27 @@ class ACSLocalizerBCT:
                 "confidence_levels": cl,
                 "fraction": fraction,
             })
+        original, grid = grid[0], grid[1:]
         grid.sort(key=lambda g: g["ks"])
-
-        core_tail = [g for g in grid if g["tail_frac"] > 0]
-        best_single = next(g for g in grid if g["tail_frac"] == 0)
-        best = core_tail[0] if core_tail else best_single
+        best = grid[0]
 
         def describe(g):
-            if g["tail_frac"] == 0:
-                return f"single {g['sigma_core_deg']:g} deg"
+            if g is original:
+                return "original (no smoothing)"
             return (f"core {g['sigma_core_deg']:g} deg + tail {g['sigma_tail_deg']:g} deg "
                     f"({100 * g['tail_frac']:g}%)")
 
         print(f"{'kernel':<40}{'ks':>8}{'cov50':>8}{'cov90':>8}")
-        for g in [best_single] + core_tail[:max(n_best, 10)]:
+        for g in [original] + grid[:max(n_best, 10)]:
             print(f"{describe(g):<40}{g['ks']:>8.3f}{g['coverage_50']:>8.3f}{g['coverage_90']:>8.3f}")
 
         N = best["N"]
         bands = self.pp_binomial_bands(values, N)
 
         self._pp_figure(values, bands)
-        plt.plot(values, best_single["fraction"], linewidth=2, ls=":",
-                 label=f"{describe(best_single)} (ks={best_single['ks']:.3f})")
-        for g in core_tail[:n_best]:
+        plt.plot(values, original["fraction"], linewidth=2, color="0.3", ls=":",
+                 label=f"{describe(original)} (ks={original['ks']:.3f})")
+        for g in grid[:n_best]:
             plt.plot(values, g["fraction"], linewidth=2,
                      label=f"{describe(g)} (ks={g['ks']:.3f})")
         self._pp_finish(values, show)
@@ -810,7 +811,7 @@ class ACSLocalizerBCT:
         return {
             "grid": grid,
             "best": best,
-            "best_single": best_single,
+            "original": original,
             "values": values,
             "bands": bands,
             "N": N,
