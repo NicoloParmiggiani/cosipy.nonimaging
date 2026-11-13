@@ -1,10 +1,13 @@
+import json
+import os
 import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 import healpy as hp
 import astropy.units as u
 from astropy.coordinates import SkyCoord, Galactic, ICRS
-from scipy.stats import binom, norm
+from scipy.optimize import NonlinearConstraint, differential_evolution
+from scipy.stats import binom, kstest, norm
 from mhealpy import HealpixMap
 from bctools.loc import TSMap, SkyMap, NormLocLike
 from scoords import Attitude, SpacecraftFrame
@@ -885,8 +888,385 @@ class ACSLocalizerBCT:
             "eq_radius_deg": float(np.sqrt(area / np.pi)),
         }
 
+    # ------------------------------------------------------------------
+    # Core+tail systematic: maximum-likelihood fit
+    # ------------------------------------------------------------------
+
+    COVERAGE_LEVELS = (0.50, 0.68, 0.90, 0.95, 0.99)
+
+    @staticmethod
+    def _gaussian_beam(ell, sigma_deg):
+        """Harmonic Gaussian beam ``exp[-0.5 l(l+1) sigma^2]``, the one of ``healpy.smoothing(sigma=...)``."""
+        sigma_rad = np.deg2rad(sigma_deg)
+        return np.exp(-0.5 * ell * (ell + 1) * sigma_rad**2)
+
+    @staticmethod
+    def true_position_projection(item):
+        """
+        Legendre projection of a prepared map on its true position.
+
+        For any isotropic beam ``B_l``, the smoothed map at the true pixel,
+        as a density per steradian, is ``sum_l B_l c_l`` with
+
+            c_l = (2l + 1) / (4 pi) * sum_i p_i P_l(cos gamma_i)
+
+        where ``p_i`` is the probability of pixel i and ``gamma_i`` its
+        angle from the true pixel centre. By the addition theorem this is
+        exactly ``healpy.smoothing(prob, sigma, iter=0, lmax=3 nside - 1)``
+        evaluated at the true pixel, divided by the pixel area, so the
+        likelihood never needs a full-sky transform. Since ``B_0 = 1`` the
+        smoothed density integrates exactly to 1 for every sigma (its
+        HEALPix pixel sum differs from 1 only by the pixel quadrature).
+
+        Parameters
+        ----------
+        item : dict
+            Output of ``prepare_skymaps``.
+
+        Returns
+        -------
+        ndarray
+            ``c_l`` for ``l = 0 .. lmax``, in sr^-1. ``c_0 = 1 / (4 pi)``.
+        """
+        nside, lmax, prob = item["nside"], item["lmax"], item["prob"]
+        pix = np.flatnonzero(prob > 0)
+        w = prob[pix]
+        x = np.array(hp.pix2vec(nside, pix)).T @ np.array(hp.pix2vec(nside, item["ipix_true"]))
+        x = np.clip(x, -1.0, 1.0)
+
+        c = np.empty(lmax + 1)
+        p_prev, p_cur = np.ones_like(x), x
+        c[0] = w.sum()
+        if lmax >= 1:
+            c[1] = w @ x
+        for ell in range(1, lmax):
+            p_prev, p_cur = p_cur, ((2 * ell + 1) * x * p_cur - ell * p_prev) / (ell + 1)
+            c[ell + 1] = w @ p_cur
+        ell = np.arange(lmax + 1)
+        return c * (2 * ell + 1) / (4.0 * np.pi)
+
+    def _projection_matrix(self, prepared):
+        """Stack the projections of all maps, zero-padded to the largest lmax."""
+        projections = [self.true_position_projection(item) for item in prepared]
+        n_ell = max(len(c) for c in projections)
+        C = np.zeros((len(projections), n_ell))
+        for j, c in enumerate(projections):
+            C[j, :len(c)] = c
+        return C, np.arange(n_ell)
+
+    @classmethod
+    def core_tail_log_likelihood(cls, params, C, ell, density_floor=1e-12):
+        """
+        ``log L = sum_i log p_cal,i(true)`` for ``params = (sigma_core, sigma_tail, f)`` in degrees.
+
+        ``p_cal = (1 - f) P_sigma_core + f P_sigma_tail`` is linear in the
+        beam, so the two beams are mixed first and applied with one
+        product. Densities are per steradian; values below
+        ``density_floor`` (zeros, or ringing of the band-limited transform
+        for very small sigma) are raised to it.
+        """
+        sigma_core, sigma_tail, f = params
+        beam = (1.0 - f) * cls._gaussian_beam(ell, sigma_core) + f * cls._gaussian_beam(ell, sigma_tail)
+        density = C @ beam
+        return float(np.sum(np.log(np.maximum(density, density_floor))))
+
+    def _fit_core_tail(self, C, ell, bounds, density_floor, de_kwargs, min_separation_deg):
+        """Maximize the core+tail likelihood with differential evolution, ``sigma_tail > sigma_core``."""
+        separation = NonlinearConstraint(lambda x: x[1] - x[0], min_separation_deg, np.inf)
+        return differential_evolution(
+            lambda x: -self.core_tail_log_likelihood(x, C, ell, density_floor),
+            bounds=bounds,
+            constraints=(separation,),
+            **de_kwargs,
+        )
+
+    def calibrate_core_tail_likelihood(
+        self,
+        results,
+        validation_results=None,
+        validation_fraction=0.3,
+        sigma_core_bounds=(0.5, 20.0),
+        sigma_tail_bounds=(1.0, 60.0),
+        f_bounds=(0.0, 1.0),
+        min_separation_deg=1e-3,
+        n_bootstrap=100,
+        density_floor=1e-12,
+        seed=0,
+        de_kwargs=None,
+        output_dir=None,
+        prefix="core_tail_likelihood",
+        show=True,
+    ):
+        """
+        Maximum-likelihood fit of a core+tail systematic kernel, validated with a P-P curve.
+
+        Model, inspired by the Fermi-GBM systematic of Connaughton et al.
+        (2015, ApJS 216, 32): every probability map is convolved with
+
+            P_cal = (1 - f) P_sigma_core + f P_sigma_tail
+
+        where ``P_sigma`` is the map smoothed with a Gaussian of standard
+        deviation sigma (degrees, not FWHM), with the beam of
+        ``healpy.smoothing``. The three parameters maximize
+
+            log L = sum_i log p_cal,i(true position of GRB i)
+
+        with ``p_cal`` the density per steradian, under the constraints
+        ``sigma_core > 0``, ``sigma_tail > sigma_core``, ``0 <= f <= 1``.
+        GBM fits the systematic on the localization offsets with a
+        Gaussian statistical error; here the likelihood is evaluated on
+        the full HEALPix maps, so this is an adaptation, not the same fit.
+
+        The P-P curve is a check, not part of the fit: it is computed on
+        ``validation_results`` if given, otherwise on a random
+        ``validation_fraction`` of ``results`` held out from the fit
+        (``validation_fraction = 0`` validates on the fit sample).
+
+        Parameters
+        ----------
+        results : list of dict
+            Same format as ``prepare_skymaps``.
+        validation_results : list of dict, optional
+            Independent sample for the P-P validation.
+        validation_fraction : float
+            Fraction of ``results`` held out for validation when
+            ``validation_results`` is None.
+        sigma_core_bounds, sigma_tail_bounds, f_bounds : (float, float)
+            Search ranges. Sigmas in degrees; sigmas much smaller than the
+            pixel size are not resolved by the band-limited transform.
+        min_separation_deg : float
+            ``sigma_tail - sigma_core`` must be at least this value.
+        n_bootstrap : int
+            Bootstrap resamplings of the fit sample for the parameter
+            uncertainties (0 disables them).
+        density_floor : float
+            Smallest density (sr^-1) entering the logarithm.
+        seed : int
+            Seed of the split, of the optimizer and of the bootstrap.
+        de_kwargs : dict, optional
+            Extra arguments of ``scipy.optimize.differential_evolution``.
+        output_dir : str, optional
+            Where to save ``<prefix>.json`` and the P-P figure
+            (``.png`` and ``.pdf``). Default ``self.output_dir``;
+            nothing is saved if both are None.
+        prefix : str
+            File name prefix.
+        show : bool
+            If True, display the figure.
+
+        Returns
+        -------
+        dict
+            ``sigma_core_best``, ``sigma_tail_best``, ``f_best``,
+            ``log_likelihood``, ``optimizer`` (success, message, nit, nfev),
+            ``bootstrap`` (std and 16/84 percentiles, or None),
+            ``ks_statistic`` / ``ks_pvalue`` against the uniform
+            distribution, ``coverage`` (empirical coverage at
+            ``COVERAGE_LEVELS``), the same for the original maps
+            (``ks_original``, ``coverage_original``),
+            ``confidence_levels`` of the validation GRBs, ``n_fit``,
+            ``n_validation``, ``validation_on_fit_sample`` and ``files``.
+        """
+        bounds = [tuple(map(float, b)) for b in (sigma_core_bounds, sigma_tail_bounds, f_bounds)]
+        (c_lo, c_hi), (t_lo, t_hi), (f_lo, f_hi) = bounds
+        if not 0.0 < c_lo < c_hi:
+            raise ValueError(f"sigma_core_bounds must satisfy 0 < low < high, got {sigma_core_bounds}")
+        if not t_lo < t_hi or t_hi <= c_lo + min_separation_deg:
+            raise ValueError(f"sigma_tail_bounds {sigma_tail_bounds} leave no room for sigma_tail > sigma_core")
+        if not 0.0 <= f_lo < f_hi <= 1.0:
+            raise ValueError(f"f_bounds must satisfy 0 <= low < high <= 1, got {f_bounds}")
+
+        rng = np.random.default_rng(seed)
+        de_kwargs = {"seed": seed, "tol": 1e-8, "popsize": 20, "maxiter": 2000, "polish": True,
+                     **(de_kwargs or {})}
+
+        # ---- samples ----
+        prepared = self.prepare_skymaps(results)
+        if validation_results is not None:
+            fit_sample, val_sample = prepared, self.prepare_skymaps(validation_results)
+        elif validation_fraction > 0:
+            order = rng.permutation(len(prepared))
+            n_val = int(round(validation_fraction * len(prepared)))
+            val_sample = [prepared[i] for i in order[:n_val]]
+            fit_sample = [prepared[i] for i in order[n_val:]]
+        else:
+            fit_sample = val_sample = prepared
+        validation_on_fit_sample = val_sample is fit_sample
+        if len(fit_sample) < 3 or len(val_sample) < 3:
+            raise ValueError(f"Too few GRBs: {len(fit_sample)} to fit, {len(val_sample)} to validate")
+        if validation_on_fit_sample:
+            print("WARNING: P-P validation on the fit sample, it is not an independent check")
+
+        # ---- fit ----
+        C, ell = self._projection_matrix(fit_sample)
+        res = self._fit_core_tail(C, ell, bounds, density_floor, de_kwargs, min_separation_deg)
+        sigma_core, sigma_tail, f = (float(v) for v in res.x)
+        log_like = float(-res.fun)
+        optimizer = {
+            "success": bool(res.success),
+            "message": str(res.message),
+            "nit": int(res.nit),
+            "nfev": int(res.nfev),
+        }
+
+        # ---- bootstrap ----
+        bootstrap = None
+        if n_bootstrap > 0:
+            samples = np.empty((n_bootstrap, 3))
+            for b in range(n_bootstrap):
+                idx = rng.integers(0, len(C), len(C))
+                kw = {**de_kwargs, "seed": int(rng.integers(2**32))}
+                samples[b] = self._fit_core_tail(C[idx], ell, bounds, density_floor, kw, min_separation_deg).x
+            p16, p84 = np.percentile(samples, [16, 84], axis=0)
+            names = ("sigma_core", "sigma_tail", "f")
+            bootstrap = {
+                "n": n_bootstrap,
+                "std": dict(zip(names, samples.std(axis=0, ddof=1).tolist())),
+                "p16": dict(zip(names, p16.tolist())),
+                "p84": dict(zip(names, p84.tolist())),
+                "samples": samples,
+            }
+
+        # ---- P-P validation ----
+        cl_cal, cl_orig = [], []
+        for item in val_sample:
+            prob = self.smooth_prepared_map(item, sigma_core, sigma_tail, f)
+            if prob is None:
+                continue
+            cl_cal.append(self._true_pixel_cl(prob, item["ipix_true"]))
+            cl_orig.append(self._true_pixel_cl(item["prob"], item["ipix_true"]))
+        cl_cal, cl_orig = np.asarray(cl_cal), np.asarray(cl_orig)
+
+        ks = kstest(cl_cal, "uniform")
+        ks_orig = kstest(cl_orig, "uniform")
+        coverage = {f"{c:.2f}": float(np.mean(cl_cal <= c)) for c in self.COVERAGE_LEVELS}
+        coverage_orig = {f"{c:.2f}": float(np.mean(cl_orig <= c)) for c in self.COVERAGE_LEVELS}
+
+        out = {
+            "sigma_core_best": sigma_core,
+            "sigma_tail_best": sigma_tail,
+            "f_best": f,
+            "log_likelihood": log_like,
+            "optimizer": optimizer,
+            "bootstrap": bootstrap,
+            "ks_statistic": float(ks.statistic),
+            "ks_pvalue": float(ks.pvalue),
+            "coverage": coverage,
+            "ks_original": {"statistic": float(ks_orig.statistic), "pvalue": float(ks_orig.pvalue)},
+            "coverage_original": coverage_orig,
+            "confidence_levels": cl_cal,
+            "n_fit": len(fit_sample),
+            "n_validation": len(cl_cal),
+            "validation_on_fit_sample": validation_on_fit_sample,
+            "bounds": {"sigma_core": bounds[0], "sigma_tail": bounds[1], "f": bounds[2]},
+            "files": {},
+        }
+        self._print_core_tail_summary(out)
+
+        # ---- figure and files ----
+        fig = self._plot_core_tail_pp(cl_cal, cl_orig, out)
+        output_dir = output_dir or getattr(self, "output_dir", None)
+        if output_dir is not None:
+            os.makedirs(output_dir, exist_ok=True)
+            base = os.path.join(output_dir, prefix)
+            for ext in ("png", "pdf"):
+                fig.savefig(f"{base}_pp.{ext}", dpi=300, bbox_inches="tight")
+                out["files"][f"figure_{ext}"] = f"{base}_pp.{ext}"
+            out["files"]["json"] = f"{base}.json"
+            with open(out["files"]["json"], "w") as fp:
+                json.dump(_to_json(out), fp, indent=2)
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
+        return out
+
+    @staticmethod
+    def _print_core_tail_summary(out):
+        bs = out["bootstrap"]
+
+        def fmt(name, key, unit):
+            value = out[key]
+            if bs is None:
+                return f"    {name:<11}= {value:.3f}{unit}"
+            return (f"    {name:<11}= {value:.3f}{unit}  (bootstrap std {bs['std'][name]:.3f}, "
+                    f"16-84%: {bs['p16'][name]:.3f} - {bs['p84'][name]:.3f})")
+
+        opt = out["optimizer"]
+        print(f"Core+tail ML fit on {out['n_fit']} GRBs: log L = {out['log_likelihood']:.2f}, "
+              f"success = {opt['success']} ({opt['nit']} iterations, {opt['nfev']} evaluations)")
+        print(fmt("sigma_core", "sigma_core_best", " deg"))
+        print(fmt("sigma_tail", "sigma_tail_best", " deg"))
+        print(fmt("f", "f_best", ""))
+        source = "fit sample" if out["validation_on_fit_sample"] else "independent sample"
+        print(f"P-P validation on {out['n_validation']} GRBs ({source}): "
+              f"KS = {out['ks_statistic']:.3f}, p = {out['ks_pvalue']:.3g} "
+              f"(original maps: KS = {out['ks_original']['statistic']:.3f}, "
+              f"p = {out['ks_original']['pvalue']:.3g})")
+        n = out["n_validation"]
+        print(f"    {'level':>6}{'calibrated':>12}{'original':>10}{'binomial 1 sigma':>18}")
+        for level, cov in out["coverage"].items():
+            c = float(level)
+            print(f"    {level:>6}{cov:>12.3f}{out['coverage_original'][level]:>10.3f}"
+                  f"{np.sqrt(c * (1 - c) / n):>18.3f}")
+
+    def _plot_core_tail_pp(self, cl_cal, cl_orig, out):
+        """P-P curve of the calibrated and original maps, with binomial bands for the sample size."""
+        n = len(cl_cal)
+        grid = np.linspace(0.0, 1.0, 201)
+        bands = self.pp_binomial_bands(grid, n)
+
+        fig, ax = plt.subplots(figsize=(5.5, 5.5))
+        for nsigma, alpha in ((3, 0.12), (2, 0.18), (1, 0.28)):
+            ax.fill_between(grid, bands[nsigma][0], bands[nsigma][1], color="tab:blue",
+                            alpha=alpha, lw=0, label=rf"${nsigma}\sigma$ binomial")
+        ax.plot([0, 1], [0, 1], "k--", lw=1, label="Ideal calibration")
+
+        for cl, style, label in (
+            (cl_orig, {"color": "0.4", "ls": ":"}, "Original maps"),
+            (cl_cal, {"color": "tab:red"}, "Core+tail calibrated"),
+        ):
+            x = np.concatenate([[0.0], np.sort(cl), [1.0]])
+            y = np.concatenate([[0.0], np.arange(1, len(cl) + 1) / len(cl), [1.0]])
+            ax.step(x, y, where="post", lw=1.8, label=label, **style)
+
+        bs = out["bootstrap"]
+        err = (lambda k: rf" \pm {bs['std'][k]:.2f}") if bs else (lambda k: "")
+        text = "\n".join([
+            rf"$\sigma_{{\rm core}} = {out['sigma_core_best']:.2f}{err('sigma_core')}^\circ$",
+            rf"$\sigma_{{\rm tail}} = {out['sigma_tail_best']:.2f}{err('sigma_tail')}^\circ$",
+            rf"$f = {out['f_best']:.3f}{err('f')}$",
+            rf"KS $= {out['ks_statistic']:.3f}$ ($p = {out['ks_pvalue']:.2g}$)",
+            rf"$N = {n}$",
+        ])
+        ax.text(0.04, 0.96, text, transform=ax.transAxes, va="top", fontsize=10,
+                bbox={"boxstyle": "round", "fc": "white", "ec": "0.7"})
+
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.set_aspect("equal")
+        ax.set_xlabel("Credible level", fontsize=12)
+        ax.set_ylabel("Fraction of GRBs within credible level", fontsize=12)
+        ax.tick_params(labelsize=11, direction="in", top=True, right=True)
+        ax.legend(loc="lower right", fontsize=9, frameon=False)
+        fig.tight_layout()
+        return fig
+
     @staticmethod
     def _load_pickle(path):
         """Load a pickle file."""
         with open(path, "rb") as f:
             return pickle.load(f)
+
+
+def _to_json(obj):
+    """Recursively convert numpy arrays, scalars and tuples to JSON types."""
+    if isinstance(obj, dict):
+        return {str(k): _to_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_json(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.generic):
+        return obj.item()
+    return obj
