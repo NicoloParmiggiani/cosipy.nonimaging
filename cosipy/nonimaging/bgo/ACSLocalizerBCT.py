@@ -472,15 +472,44 @@ class ACSLocalizerBCT:
         return prepared
 
     @staticmethod
-    def smooth_prepared_map(item, sigma_deg):
+    def _gaussian_smoothed_map(item, sigma_deg):
+        """Unnormalized map convolved with a Gaussian beam (``sigma_deg = 0`` returns ``prob``)."""
+        if sigma_deg == 0:
+            return item["prob"]
+        sigma_rad = np.deg2rad(sigma_deg)
+        ell = np.arange(item["lmax"] + 1)
+        beam = np.exp(-0.5 * ell * (ell + 1) * sigma_rad**2)
+        return hp.alm2map(
+            hp.almxfl(item["alm"], beam),
+            nside=item["nside"],
+            lmax=item["lmax"],
+        )
+
+    @staticmethod
+    def _normalize_smoothed(prob):
+        """Clip the ~-1e-15 values of the inverse transform and renormalize. None if invalid."""
+        prob = np.clip(prob, 0.0, None)
+        total = prob.sum()
+        if total <= 0 or not np.isfinite(total):
+            return None
+        return prob / total
+
+    @staticmethod
+    def _true_pixel_cl(prob, ipix_true):
+        """Confidence level of the true position: sum of the pixels with prob >= prob[ipix_true]."""
+        return np.sum(prob[prob >= prob[ipix_true]])
+
+    @staticmethod
+    def smooth_prepared_map(item, sigma_deg, sigma_tail_deg=0.0, tail_frac=0.0):
         """
-        Apply a Gaussian beam to a prepared probability map.
+        Apply a Gaussian (or core+tail) systematic kernel to a prepared probability map.
 
         ``sigma_deg`` is the Gaussian standard deviation in degrees,
         not the FWHM. ``sigma_deg = 0`` returns the unsmoothed map.
 
         The beam in harmonic space is
-        ``B_l = exp[-0.5 l(l+1) sigma^2]``.
+        ``B_l = (1 - f) exp[-0.5 l(l+1) sigma^2] + f exp[-0.5 l(l+1) sigma_tail^2]``
+        with ``f = tail_frac``. ``tail_frac = 0`` is the single Gaussian.
         Tiny negative values from the inverse transform are clipped,
         then the map is renormalized.
 
@@ -490,34 +519,30 @@ class ACSLocalizerBCT:
             Output of ``prepare_skymaps`` (must include ``prob``,
             ``alm``, ``nside``, ``lmax``).
         sigma_deg : float
-            Gaussian sigma in degrees.
+            Gaussian sigma of the core in degrees.
+        sigma_tail_deg : float
+            Gaussian sigma of the tail in degrees. Used only if ``tail_frac > 0``.
+        tail_frac : float
+            Fraction of the kernel in the tail, between 0 and 1.
 
         Returns
         -------
         ndarray or None
             Smoothed probability map, or None if the result is invalid.
         """
-        if sigma_deg == 0:
+        if not 0.0 <= tail_frac <= 1.0:
+            raise ValueError(f"tail_frac must be in [0, 1], got {tail_frac}")
+        if sigma_deg == 0 and tail_frac == 0:
             return item["prob"].copy()
 
-        sigma_rad = np.deg2rad(sigma_deg)
-        ell = np.arange(item["lmax"] + 1)
-        beam = np.exp(-0.5 * ell * (ell + 1) * sigma_rad**2)
-        prob = hp.alm2map(
-            hp.almxfl(item["alm"], beam),
-            nside=item["nside"],
-            lmax=item["lmax"],
-        )
-        # Numerical inverse transforms can yield ~-1e-15
-        prob = np.clip(prob, 0.0, None)
-        total = prob.sum()
-        if total <= 0 or not np.isfinite(total):
-            return None
-        return prob / total
+        prob = (1.0 - tail_frac) * ACSLocalizerBCT._gaussian_smoothed_map(item, sigma_deg)
+        if tail_frac > 0:
+            prob = prob + tail_frac * ACSLocalizerBCT._gaussian_smoothed_map(item, sigma_tail_deg)
+        return ACSLocalizerBCT._normalize_smoothed(prob)
 
-    def pp_curve_smoothed(self, prepared, values, sigma_deg):
+    def pp_curve_smoothed(self, prepared, values, sigma_deg, sigma_tail_deg=0.0, tail_frac=0.0):
         """
-        Build the P-P curve at a given systematic Gaussian sigma.
+        Build the P-P curve at a given systematic kernel (Gaussian or core+tail).
 
         For each GRB the confidence level of the true position is the
         sum of all pixels with probability >= that of the true pixel.
@@ -532,7 +557,9 @@ class ACSLocalizerBCT:
             Confidence levels at which to evaluate the curve (e.g. 0 to 1
             in steps of 0.01).
         sigma_deg : float
-            Systematic Gaussian sigma in degrees (0 = no smoothing).
+            Systematic Gaussian sigma of the core in degrees (0 = no smoothing).
+        sigma_tail_deg, tail_frac : float
+            Tail of the kernel, see ``smooth_prepared_map``.
 
         Returns
         -------
@@ -543,11 +570,10 @@ class ACSLocalizerBCT:
         """
         cls = []
         for item in prepared:
-            prob = self.smooth_prepared_map(item, sigma_deg)
+            prob = self.smooth_prepared_map(item, sigma_deg, sigma_tail_deg, tail_frac)
             if prob is None:
                 continue
-            p_true = prob[item["ipix_true"]]
-            cls.append(np.sum(prob[prob >= p_true]))
+            cls.append(self._true_pixel_cl(prob, item["ipix_true"]))
         cls = np.asarray(cls)
         fraction = np.searchsorted(np.sort(cls), values, side="right") / len(cls)
         return cls, fraction
@@ -656,18 +682,152 @@ class ACSLocalizerBCT:
         N = len(next(iter(per_sigma.values()))["confidence_levels"])
         bands = self.pp_binomial_bands(values, N)
 
-        plt.figure(figsize=(8, 7))
-        plt.fill_between(values, bands[3][0], bands[3][1], alpha=0.15, label=r"$3\sigma$ expected")
-        plt.fill_between(values, bands[2][0], bands[2][1], alpha=0.20, label=r"$2\sigma$ expected")
-        plt.fill_between(values, bands[1][0], bands[1][1], alpha=0.30, label=r"$1\sigma$ expected")
+        self._pp_figure(values, bands)
         for sigma_deg, out in per_sigma.items():
             plt.plot(
                 values, out["fraction"], linewidth=2,
                 label=rf"$\sigma_{{\rm sys}}={sigma_deg:g}^\circ$",
             )
+        self._pp_finish(values, show)
+        return {"values": values, "per_sigma": per_sigma, "bands": bands, "N": N}
+
+    def calibrate_pp_coverage_core_tail(
+        self,
+        results,
+        sigma_core_deg=(0.0, 1.0, 2.0, 3.0),
+        sigma_tail_deg=(5.0, 10.0, 15.0, 20.0, 30.0),
+        tail_frac=(0.05, 0.1, 0.2, 0.3, 0.5),
+        values=None,
+        n_best=3,
+        show=True,
+    ):
+        """
+        Grid search of a core+tail systematic kernel on the P-P curve.
+
+        The kernel is ``(1 - f) G(sigma_core) + f G(sigma_tail)``, with
+        ``G`` a Gaussian of standard deviation sigma (degrees, not FWHM).
+        Use it when a single sigma cannot put the P-P curve on the
+        diagonal, e.g. a curve above the diagonal at low confidence and
+        below it at high confidence: the core is already wide enough and
+        what is missing is the tail (far outliers).
+
+        Every combination with ``sigma_tail > sigma_core`` is tested, plus
+        the single Gaussians (``f = 0``) for comparison. Each combination
+        is scored with the maximum distance of the P-P curve from the
+        diagonal (``ks``). The Gaussian smoothed maps are computed once per
+        GRB and sigma, then mixed for every ``f``.
+
+        Parameters
+        ----------
+        results : list of dict
+            Same format as ``prepare_skymaps``.
+        sigma_core_deg, sigma_tail_deg : sequence of float
+            Gaussian sigmas of the core and of the tail to test, in degrees.
+        tail_frac : sequence of float
+            Fractions of the kernel in the tail to test, in (0, 1].
+        values : array, optional
+            Confidence levels. Default is 0, 0.01, ..., 1.00.
+        n_best : int
+            Number of best core+tail kernels drawn in the figure, together
+            with the best single Gaussian.
+        show : bool
+            If True, display the figure.
+
+        Returns
+        -------
+        dict
+            ``grid``: one dict per kernel (``sigma_core_deg``,
+            ``sigma_tail_deg``, ``tail_frac``, ``ks``, ``coverage_50``,
+            ``coverage_90``, ``N``, ``confidence_levels``, ``fraction``),
+            sorted by ``ks``; ``best`` (best core+tail kernel),
+            ``best_single`` (best single Gaussian), ``values``, ``bands``, ``N``.
+        """
+        if values is None:
+            values = np.linspace(0.0, 1.0, 101)
+        prepared = self.prepare_skymaps(results)
+
+        kernels = [(float(c), 0.0, 0.0) for c in sigma_core_deg]
+        kernels += [
+            (float(c), float(t), float(f))
+            for c in sigma_core_deg
+            for t in sigma_tail_deg
+            for f in tail_frac
+            if t > c and 0.0 < f <= 1.0
+        ]
+        sigmas = sorted({c for c, _, _ in kernels} | {t for _, t, f in kernels if f > 0})
+
+        cls = np.full((len(kernels), len(prepared)), np.nan)
+        for j, item in enumerate(prepared):
+            maps = {s: self._gaussian_smoothed_map(item, s) for s in sigmas}
+            for k, (c, t, f) in enumerate(kernels):
+                prob = maps[c] if f == 0 else (1.0 - f) * maps[c] + f * maps[t]
+                prob = self._normalize_smoothed(prob)
+                if prob is not None:
+                    cls[k, j] = self._true_pixel_cl(prob, item["ipix_true"])
+
+        grid = []
+        for (c, t, f), cl in zip(kernels, cls):
+            cl = cl[np.isfinite(cl)]
+            fraction = np.searchsorted(np.sort(cl), values, side="right") / len(cl)
+            grid.append({
+                "sigma_core_deg": c,
+                "sigma_tail_deg": t,
+                "tail_frac": f,
+                "ks": float(np.max(np.abs(fraction - values))),
+                "coverage_50": float(np.mean(cl <= 0.50)),
+                "coverage_90": float(np.mean(cl <= 0.90)),
+                "N": len(cl),
+                "confidence_levels": cl,
+                "fraction": fraction,
+            })
+        grid.sort(key=lambda g: g["ks"])
+
+        core_tail = [g for g in grid if g["tail_frac"] > 0]
+        best_single = next(g for g in grid if g["tail_frac"] == 0)
+        best = core_tail[0] if core_tail else best_single
+
+        def describe(g):
+            if g["tail_frac"] == 0:
+                return f"single {g['sigma_core_deg']:g} deg"
+            return (f"core {g['sigma_core_deg']:g} deg + tail {g['sigma_tail_deg']:g} deg "
+                    f"({100 * g['tail_frac']:g}%)")
+
+        print(f"{'kernel':<40}{'ks':>8}{'cov50':>8}{'cov90':>8}")
+        for g in [best_single] + core_tail[:max(n_best, 10)]:
+            print(f"{describe(g):<40}{g['ks']:>8.3f}{g['coverage_50']:>8.3f}{g['coverage_90']:>8.3f}")
+
+        N = best["N"]
+        bands = self.pp_binomial_bands(values, N)
+
+        self._pp_figure(values, bands)
+        plt.plot(values, best_single["fraction"], linewidth=2, ls=":",
+                 label=f"{describe(best_single)} (ks={best_single['ks']:.3f})")
+        for g in core_tail[:n_best]:
+            plt.plot(values, g["fraction"], linewidth=2,
+                     label=f"{describe(g)} (ks={g['ks']:.3f})")
+        self._pp_finish(values, show)
+
+        return {
+            "grid": grid,
+            "best": best,
+            "best_single": best_single,
+            "values": values,
+            "bands": bands,
+            "N": N,
+        }
+
+    @staticmethod
+    def _pp_figure(values, bands):
+        plt.figure(figsize=(8, 7))
+        plt.fill_between(values, bands[3][0], bands[3][1], alpha=0.15, label=r"$3\sigma$ expected")
+        plt.fill_between(values, bands[2][0], bands[2][1], alpha=0.20, label=r"$2\sigma$ expected")
+        plt.fill_between(values, bands[1][0], bands[1][1], alpha=0.30, label=r"$1\sigma$ expected")
+
+    @staticmethod
+    def _pp_finish(values, show):
         plt.plot(values, values, "--", color="black", linewidth=1.5, label="Perfect calibration")
         plt.xlabel("Confidence Level", fontsize=15)
-        plt.ylabel("Fraction contained", fontsize=15)
+        plt.ylabel("Fraction < Confidence Level", fontsize=15)
         plt.xlim(0, 1)
         plt.ylim(0, 1)
         plt.legend(fontsize=10)
@@ -676,24 +836,27 @@ class ACSLocalizerBCT:
         plt.tight_layout()
         if show:
             plt.show()
-        return {"values": values, "per_sigma": per_sigma, "bands": bands, "N": N}
 
-    def smooth_skymap_area(self, sky_map, sigma_deg, conf_level=0.9):
+    def smooth_skymap_area(self, sky_map, sigma_deg, conf_level=0.9, sigma_tail_deg=0.0, tail_frac=0.0):
         """
         Smooth one probability sky map with a calibrated systematic kernel.
 
-        Runtime helper: after choosing ``sigma_deg`` from
-        ``calibrate_pp_coverage``, apply that Gaussian to a single map
-        and return the new containment area at ``conf_level``.
+        Runtime helper: after choosing the kernel from
+        ``calibrate_pp_coverage`` (single Gaussian) or
+        ``calibrate_pp_coverage_core_tail`` (core+tail), apply it to a
+        single map and return the new containment area at ``conf_level``.
 
         Parameters
         ----------
         sky_map : map object
             Probability HEALPix map (uses ``_data``).
         sigma_deg : float
-            Gaussian systematic sigma in degrees. 0 skips smoothing.
+            Gaussian systematic sigma (of the core) in degrees. 0 skips smoothing.
         conf_level : float
             Containment fraction, default 0.9.
+        sigma_tail_deg, tail_frac : float
+            Tail of the kernel, see ``smooth_prepared_map``. ``tail_frac = 0``
+            is the single Gaussian.
 
         Returns
         -------
@@ -707,9 +870,9 @@ class ACSLocalizerBCT:
             prob = hp.reorder(prob, n2r=True)
         nside = hp.get_nside(prob)
         item = {"prob": prob, "nside": nside, "lmax": 3 * nside - 1}
-        if sigma_deg != 0:
+        if sigma_deg != 0 or tail_frac != 0:
             item["alm"] = hp.map2alm(prob, lmax=item["lmax"], iter=0)
-        prob = self.smooth_prepared_map(item, sigma_deg)
+        prob = self.smooth_prepared_map(item, sigma_deg, sigma_tail_deg, tail_frac)
 
         # Smallest set of pixels whose probability sums to conf_level
         order = np.argsort(prob)[::-1]
