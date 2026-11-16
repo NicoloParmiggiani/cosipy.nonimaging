@@ -1210,47 +1210,79 @@ class ACSLocalizerBCT:
             print(f"    {level:>6}{cov:>12.3f}{out['coverage_original'][level]:>10.3f}"
                   f"{np.sqrt(c * (1 - c) / n):>18.3f}")
 
+    
     def _plot_core_tail_pp(self, cl_cal, cl_orig, out):
-        """P-P curve of the calibrated and original maps, with binomial bands for the sample size."""
+        """P-P plot with the same style as the other calibrations."""
+
         n = len(cl_cal)
         grid = np.linspace(0.0, 1.0, 201)
         bands = self.pp_binomial_bands(grid, n)
 
-        fig, ax = plt.subplots(figsize=(5.5, 5.5))
-        for nsigma, alpha in ((3, 0.12), (2, 0.18), (1, 0.28)):
-            ax.fill_between(grid, bands[nsigma][0], bands[nsigma][1], color="tab:blue",
-                            alpha=alpha, lw=0, label=rf"${nsigma}\sigma$ binomial")
-        ax.plot([0, 1], [0, 1], "k--", lw=1, label="Ideal calibration")
+        # Same figure size, colors and binomial bands
+        self._pp_figure(grid, bands)
+        fig = plt.gcf()
+        ax = plt.gca()
 
+        # Original and calibrated P-P curves
         for cl, style, label in (
-            (cl_orig, {"color": "0.4", "ls": ":"}, "Original maps"),
-            (cl_cal, {"color": "tab:red"}, "Core+tail calibrated"),
+            (cl_orig, {"color": "0.3", "ls": ":"}, "Original maps"),
+            (cl_cal, {}, "Core+tail calibrated"),
         ):
-            x = np.concatenate([[0.0], np.sort(cl), [1.0]])
-            y = np.concatenate([[0.0], np.arange(1, len(cl) + 1) / len(cl), [1.0]])
-            ax.step(x, y, where="post", lw=1.8, label=label, **style)
+            x = np.concatenate(([0.0], np.sort(cl), [1.0]))
+            y = np.concatenate((
+                [0.0],
+                np.arange(1, len(cl) + 1) / len(cl),
+                [1.0]
+            ))
 
+            ax.step(
+                x, y,
+                where="post",
+                linewidth=2,
+                label=label,
+                **style
+            )
+
+        # Calibration parameters and statistics
         bs = out["bootstrap"]
-        err = (lambda k: rf" \pm {bs['std'][k]:.2f}") if bs else (lambda k: "")
-        text = "\n".join([
+
+        err = (
+            lambda k: rf" \pm {bs['std'][k]:.2f}"
+        ) if bs else (lambda k: "")
+
+        info = "\n".join([
             rf"$\sigma_{{\rm core}} = {out['sigma_core_best']:.2f}{err('sigma_core')}^\circ$",
             rf"$\sigma_{{\rm tail}} = {out['sigma_tail_best']:.2f}{err('sigma_tail')}^\circ$",
             rf"$f = {out['f_best']:.3f}{err('f')}$",
             rf"KS $= {out['ks_statistic']:.3f}$ ($p = {out['ks_pvalue']:.2g}$)",
             rf"$N = {n}$",
         ])
-        ax.text(0.04, 0.96, text, transform=ax.transAxes, va="top", fontsize=10,
-                bbox={"boxstyle": "round", "fc": "white", "ec": "0.7"})
 
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-        ax.set_aspect("equal")
-        ax.set_xlabel("Credible level", fontsize=12)
-        ax.set_ylabel("Fraction of GRBs within credible level", fontsize=12)
-        ax.tick_params(labelsize=11, direction="in", top=True, right=True)
-        ax.legend(loc="lower right", fontsize=9, frameon=False)
+        ax.text(
+            0.04, 0.96,
+            info,
+            transform=ax.transAxes,
+            va="top",
+            fontsize=10,
+            bbox={
+                "boxstyle": "round",
+                "fc": "white",
+                "ec": "0.7"
+            }
+        )
+
+        # Same axes, labels, fonts, grid and legend style
+        self._pp_finish(grid, show=False)
+
+        ax.legend(
+            loc="lower right",
+            fontsize=10
+        )
+
         fig.tight_layout()
+
         return fig
+
 
     @staticmethod
     def _load_pickle(path):
