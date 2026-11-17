@@ -13,6 +13,42 @@ from cosipy.nonimaging.bgo.panels import (
     panel_name,
 )
 
+# Fine grid of the combined ACS HDF5, and the light-curve window.
+_FINE_DT = 0.050
+_WINDOW_S = 60.0
+
+
+def _complete_fine_bins(time_axis, n_counts, t_start, duration=_WINDOW_S, dt=_FINE_DT):
+    """Index range of complete fine bins covering ``duration`` seconds.
+
+    ``time bins (s)`` is either the bin edges (one longer than the counts)
+    or the bin starts. The window begins at the first start >= ``t_start``,
+    so a bin that only overlaps the boundary is not clipped into the first
+    or last coarse bin. The edge at the end of the window is not a bin.
+    """
+    time_axis = np.asarray(time_axis, dtype=np.float64)
+    if len(time_axis) == n_counts + 1:
+        bin_starts = time_axis[:-1]
+    elif len(time_axis) == n_counts:
+        bin_starts = time_axis
+    else:
+        raise ValueError(
+            f"time axis length {len(time_axis)} does not match "
+            f"{n_counts} count bins"
+        )
+
+    n_fine = int(round(duration / dt))
+    i0 = int(np.searchsorted(bin_starts, t_start, side="left"))
+    i1 = i0 + n_fine
+    if i0 >= len(bin_starts) or i1 > len(bin_starts):
+        return None
+
+    span = bin_starts[i1 - 1] - bin_starts[i0]
+    if not np.isclose(span, (n_fine - 1) * dt, atol=1e-4):
+        return None
+    return i0, i1, bin_starts
+
+
 class ACSPrepareL2:
 
     """
@@ -80,20 +116,27 @@ class ACSPrepareL2:
 
         with h5py.File(hdf5_path, "r") as f:
 
-            time_bins = f["time bins (s)"][:]
+            time_axis = f["time bins (s)"][:]
+            n_counts = None
+            for key in (*PANEL_NAMES, *LEGACY_PANEL_KEYS.values()):
+                if key in f:
+                    n_counts = f[key].shape[0]
+                    break
+            if n_counts is None:
+                raise KeyError(f"No ACS panel datasets in {hdf5_path}")
 
             for _, row in events_df.iterrows():
 
                 name = row["Event"]
 
                 t_start = row["Start_time"] + start_ori - 30
-                t_end = t_start + 60
+                t_end = t_start + _WINDOW_S
 
-                # Select time bins inside the requested window
-                mask = (time_bins >= t_start) & (time_bins <= t_end)
-                indices = np.where(mask)[0]
-
-                if len(indices) == 0:
+                # Complete 50 ms bins only. A closed [t_start, t_end] also
+                # takes the edge at t_end, whose counts belong to the next
+                # bin; rebin_lightcurve then adds them to the last coarse bin.
+                selected = _complete_fine_bins(time_axis, n_counts, t_start, t_end - t_start)
+                if selected is None:
 
                     print("No Data")
 
@@ -104,7 +147,8 @@ class ACSPrepareL2:
 
                     continue
 
-                selected_time = time_bins[indices]
+                i0, i1, bin_starts = selected
+                selected_time = bin_starts[i0:i1]
 
                 counts_per_detector = {}
 
@@ -112,15 +156,15 @@ class ACSPrepareL2:
 
                     panel = panel_name(det)
                     dataset = panel if panel in f else LEGACY_PANEL_KEYS[panel]
-                    counts_per_detector[panel] = f[dataset][indices, 0]
+                    counts_per_detector[panel] = f[dataset][i0:i1, 0]
 
                 results.append({
                     "name": name,
                     "counts": counts_per_detector,
                     "time": selected_time,
                     "trigger_time": row["Start_time"] + start_ori,
-                    "time_start": t_start,
-                    "time_stop": t_end,
+                    "time_start": float(bin_starts[i0]),
+                    "time_stop": float(bin_starts[i0]) + _WINDOW_S,
                     "theta": row["Zenith"],
                     "phi": row["Azimuth"]
                 })
@@ -151,12 +195,17 @@ class ACSPrepareL2:
         # Shift: da [-30, 30] a [0, 60]
         edge_ticks = edge_ticks + 600
 
-        # Quantizzazione dei tempi sulla griglia esatta da 50 ms
+        # Quantizzazione dei tempi sulla griglia esatta da 50 ms.
+        # np.histogram chiude l'ultimo bin a destra: un campione sul bordo
+        # finale (t = 60 s) finirebbe nell'ultimo bin grosso.
         time_ticks = np.rint(
             np.asarray(time, dtype=float) / base_dt
         ).astype(int)
 
         counts = np.asarray(counts)
+        inside = (time_ticks >= edge_ticks[0]) & (time_ticks < edge_ticks[-1])
+        time_ticks = time_ticks[inside]
+        counts = counts[inside]
 
         rebinned_counts, _ = np.histogram(
             time_ticks,
