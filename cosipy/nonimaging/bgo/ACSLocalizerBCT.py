@@ -7,6 +7,7 @@ import healpy as hp
 import astropy.units as u
 from astropy.coordinates import SkyCoord, Galactic, ICRS
 from scipy.optimize import NonlinearConstraint, differential_evolution
+from scipy.special import logsumexp
 from scipy.stats import binom, kstest, norm
 from mhealpy import HealpixMap
 from bctools.loc import TSMap, SkyMap, NormLocLike
@@ -634,6 +635,8 @@ class ACSLocalizerBCT:
         -------
         dict
             Output of ``calibrate_pp_coverage`` with ``sigma_sys_deg=[0]``.
+            ``pp_plot`` is the pickleable copy of the figure: confidence
+            levels, the plotted fraction, and the binomial bands.
         """
         return self.calibrate_pp_coverage(
             results, sigma_sys_deg=[0.0], values=values, show=show
@@ -665,7 +668,9 @@ class ACSLocalizerBCT:
         -------
         dict
             ``values``, ``per_sigma`` (confidence levels, P-P fraction,
-            90% coverage for each sigma), ``bands``, and ``N``.
+            90% coverage for each sigma), ``bands``, ``N``, and
+            ``pp_plot``. ``pp_plot`` is enough to redraw the figure and
+            can be written with ``pickle.dump``.
         """
         if values is None:
             values = np.linspace(0.0, 1.0, 101)
@@ -684,15 +689,63 @@ class ACSLocalizerBCT:
 
         N = len(next(iter(per_sigma.values()))["confidence_levels"])
         bands = self.pp_binomial_bands(values, N)
+        pp_plot = self._pp_coverage_record(values, per_sigma, bands, N)
+        self.plot_pp_coverage_from_data(pp_plot, show=show)
+        return {
+            "values": values,
+            "per_sigma": per_sigma,
+            "bands": bands,
+            "N": N,
+            "pp_plot": pp_plot,
+        }
 
-        self._pp_figure(values, bands)
-        for sigma_deg, out in per_sigma.items():
-            plt.plot(
-                values, out["fraction"], linewidth=2,
-                label=rf"$\sigma_{{\rm sys}}={sigma_deg:g}^\circ$",
+    @staticmethod
+    def _pp_coverage_record(values, per_sigma, bands, n):
+        """Arrays of one ``calibrate_pp_coverage`` figure, in the form that is drawn."""
+        curves = []
+        for sigma_deg, item in per_sigma.items():
+            sigma_deg = float(sigma_deg)
+            curves.append({
+                "sigma_sys_deg": sigma_deg,
+                "label": rf"$\sigma_{{\rm sys}}={sigma_deg:g}^\circ$",
+                "confidence_levels": np.asarray(item["confidence_levels"], dtype=float),
+                "fraction": np.asarray(item["fraction"], dtype=float),
+                "coverage_90": float(item["coverage_90"]),
+            })
+        return {
+            "values": np.asarray(values, dtype=float),
+            "n": int(n),
+            "bands": [
+                {
+                    "nsigma": int(nsigma),
+                    "low": np.asarray(edge[0], dtype=float),
+                    "high": np.asarray(edge[1], dtype=float),
+                }
+                for nsigma, edge in bands.items()
+            ],
+            "curves": curves,
+        }
+
+    def plot_pp_coverage_from_data(self, pp_plot, show=True):
+        """
+        Redraw a ``plot_pp_coverage`` / ``calibrate_pp_coverage`` figure.
+
+        ``pp_plot`` is the dict returned by those methods and the object
+        to pass to ``pickle.dump``.
+        """
+        values = np.asarray(pp_plot["values"], dtype=float)
+        bands = {
+            int(item["nsigma"]): (
+                np.asarray(item["low"], dtype=float),
+                np.asarray(item["high"], dtype=float),
             )
+            for item in pp_plot["bands"]
+        }
+        self._pp_figure(values, bands)
+        for curve in pp_plot["curves"]:
+            plt.plot(values, np.asarray(curve["fraction"], dtype=float), linewidth=2, label=curve["label"])
         self._pp_finish(values, show)
-        return {"values": values, "per_sigma": per_sigma, "bands": bands, "N": N}
+        return plt.gcf()
 
     def calibrate_pp_coverage_core_tail(
         self,
@@ -955,132 +1008,93 @@ class ACSLocalizerBCT:
         return C, np.arange(n_ell)
 
     @classmethod
-    def core_tail_log_likelihood(cls, params, C, ell, density_floor=1e-12):
-        """
-        ``log L = sum_i log p_cal,i(true)`` for ``params = (sigma_core, sigma_tail, f)`` in degrees.
+    def _mixture_density(cls, thetas, C, ell):
+        """Core+tail density per steradian at each true position. Shape ``(n_params, n_grb)``."""
+        thetas = np.atleast_2d(np.asarray(thetas, dtype=float))
+        ell = np.asarray(ell, dtype=float)
+        sigma = np.deg2rad(thetas[:, :2])[:, :, None]
+        beam = np.exp(-0.5 * (ell * (ell + 1.0)) * sigma**2)
+        weight = np.stack((1.0 - thetas[:, 2], thetas[:, 2]), axis=1)[:, :, None]
+        return np.sum(weight * beam, axis=1) @ np.asarray(C, dtype=float).T
 
-        ``p_cal = (1 - f) P_sigma_core + f P_sigma_tail`` is linear in the
-        beam, so the two beams are mixed first and applied with one
-        product. Densities are per steradian; values below
-        ``density_floor`` (zeros, or ringing of the band-limited transform
-        for very small sigma) are raised to it.
+    @classmethod
+    def _core_tail_log_likelihood_many(cls, thetas, C, ell, density_floor=1e-12):
+        """Log-likelihood at many ``(sigma_core, sigma_tail, f)`` points. Same floor as the scalar call."""
+        logl = np.sum(np.log(np.maximum(cls._mixture_density(thetas, C, ell), density_floor)), axis=1)
+        logl[~np.isfinite(logl)] = -np.inf
+        return logl
+
+    @classmethod
+    def core_tail_log_likelihood(cls, params, C, ell, density_floor=1e-12):
+        """``sum log p_cal(true)`` for ``(sigma_core, sigma_tail, f)`` in degrees. ``f = 0`` is one Gaussian."""
+        params = np.asarray(params, dtype=float).reshape(1, 3)
+        return float(cls._core_tail_log_likelihood_many(params, C, ell, density_floor)[0])
+
+    @classmethod
+    def gaussian_log_likelihood(cls, sigma, C, ell, density_floor=1e-12):
+        """Single-Gaussian systematic: the core+tail likelihood with ``f = 0``."""
+        sigma = float(sigma)
+        return cls.core_tail_log_likelihood((sigma, sigma, 0.0), C, ell, density_floor)
+
+    @staticmethod
+    def prior_transform_gaussian(u, sigma_bounds):
+        """Map one unit-cube coordinate to ``sigma ~ Uniform(low, high)`` degrees."""
+        lo, hi = sigma_bounds
+        return np.array([lo + float(u[0]) * (hi - lo)])
+
+    @staticmethod
+    def prior_transform_core_tail(u, sigma_core_bounds, sigma_tail_bounds, f_bounds, min_separation_deg):
         """
-        sigma_core, sigma_tail, f = params
-        beam = (1.0 - f) * cls._gaussian_beam(ell, sigma_core) + f * cls._gaussian_beam(ell, sigma_tail)
-        density = C @ beam
-        return float(np.sum(np.log(np.maximum(density, density_floor))))
+        Map the unit cube to the core+tail prior.
+
+        ``sigma_core`` and ``f`` are uniform on their bounds.
+        ``sigma_tail | sigma_core`` is uniform from ``max(tail_low, sigma_core + eps)`` to ``tail_high``.
+        That is a normalized conditional prior, not a uniform density on ``sigma_tail > sigma_core``.
+        """
+        c_lo, c_hi = sigma_core_bounds
+        t_lo, t_hi = sigma_tail_bounds
+        f_lo, f_hi = f_bounds
+        sigma_c = c_lo + float(u[0]) * (c_hi - c_lo)
+        low = max(t_lo, sigma_c + min_separation_deg)
+        if low >= t_hi:
+            raise ValueError("sigma_tail prior has zero width; raise its upper bound or lower sigma_core_bounds[1]")
+        sigma_t = low + float(u[1]) * (t_hi - low)
+        frac = f_lo + float(u[2]) * (f_hi - f_lo)
+        return np.array([sigma_c, sigma_t, frac])
 
     def _fit_core_tail(self, C, ell, bounds, density_floor, de_kwargs, min_separation_deg):
-        """Maximize the core+tail likelihood with differential evolution, ``sigma_tail > sigma_core``."""
+        """Maximum likelihood of ``(sigma_core, sigma_tail, f)``, with ``sigma_tail > sigma_core``."""
         separation = NonlinearConstraint(lambda x: x[1] - x[0], min_separation_deg, np.inf)
         return differential_evolution(
             lambda x: -self.core_tail_log_likelihood(x, C, ell, density_floor),
-            bounds=bounds,
-            constraints=(separation,),
-            **de_kwargs,
+            bounds=bounds, constraints=(separation,), **de_kwargs,
         )
 
-    def calibrate_core_tail_likelihood(
-        self,
-        results,
-        validation_results=None,
-        validation_fraction=0.3,
-        sigma_core_bounds=(0.5, 20.0),
-        sigma_tail_bounds=(1.0, 60.0),
-        f_bounds=(0.0, 1.0),
-        min_separation_deg=1e-3,
-        n_bootstrap=100,
-        density_floor=1e-12,
-        seed=0,
-        de_kwargs=None,
-        output_dir=None,
-        prefix="core_tail_likelihood",
-        show=True,
-    ):
-        """
-        Maximum-likelihood fit of a core+tail systematic kernel, validated with a P-P curve.
+    def _fit_gaussian(self, C, ell, sigma_bounds, density_floor, de_kwargs):
+        """Maximum likelihood of the single systematic sigma, on the same projections."""
+        return differential_evolution(
+            lambda x: -self.gaussian_log_likelihood(float(x[0]), C, ell, density_floor),
+            bounds=[tuple(sigma_bounds)], **de_kwargs,
+        )
 
-        Model, inspired by the Fermi-GBM systematic of Connaughton et al.
-        (2015, ApJS 216, 32): every probability map is convolved with
+    def _bootstrap_core_tail(self, C, ell, bounds, density_floor, de_kwargs, min_separation_deg, n_bootstrap, rng):
+        samples = np.empty((n_bootstrap, 3))
+        for i in range(n_bootstrap):
+            idx = rng.integers(0, len(C), len(C))
+            kw = {**de_kwargs, "seed": int(rng.integers(2**32))}
+            samples[i] = self._fit_core_tail(C[idx], ell, bounds, density_floor, kw, min_separation_deg).x
+        low, high = np.percentile(samples, [16, 84], axis=0)
+        names = ("sigma_core", "sigma_tail", "f")
+        return {
+            "n": n_bootstrap,
+            "std": dict(zip(names, samples.std(axis=0, ddof=1).tolist())),
+            "p16": dict(zip(names, low.tolist())),
+            "p84": dict(zip(names, high.tolist())),
+            "samples": samples,
+        }
 
-            P_cal = (1 - f) P_sigma_core + f P_sigma_tail
-
-        where ``P_sigma`` is the map smoothed with a Gaussian of standard
-        deviation sigma (degrees, not FWHM), with the beam of
-        ``healpy.smoothing``. The three parameters maximize
-
-            log L = sum_i log p_cal,i(true position of GRB i)
-
-        with ``p_cal`` the density per steradian, under the constraints
-        ``sigma_core > 0``, ``sigma_tail > sigma_core``, ``0 <= f <= 1``.
-        GBM fits the systematic on the localization offsets with a
-        Gaussian statistical error; here the likelihood is evaluated on
-        the full HEALPix maps, so this is an adaptation, not the same fit.
-
-        The P-P curve is a check, not part of the fit: it is computed on
-        ``validation_results`` if given, otherwise on a random
-        ``validation_fraction`` of ``results`` held out from the fit
-        (``validation_fraction = 0`` validates on the fit sample).
-
-        Parameters
-        ----------
-        results : list of dict
-            Same format as ``prepare_skymaps``.
-        validation_results : list of dict, optional
-            Independent sample for the P-P validation.
-        validation_fraction : float
-            Fraction of ``results`` held out for validation when
-            ``validation_results`` is None.
-        sigma_core_bounds, sigma_tail_bounds, f_bounds : (float, float)
-            Search ranges. Sigmas in degrees; sigmas much smaller than the
-            pixel size are not resolved by the band-limited transform.
-        min_separation_deg : float
-            ``sigma_tail - sigma_core`` must be at least this value.
-        n_bootstrap : int
-            Bootstrap resamplings of the fit sample for the parameter
-            uncertainties (0 disables them).
-        density_floor : float
-            Smallest density (sr^-1) entering the logarithm.
-        seed : int
-            Seed of the split, of the optimizer and of the bootstrap.
-        de_kwargs : dict, optional
-            Extra arguments of ``scipy.optimize.differential_evolution``.
-        output_dir : str, optional
-            Where to save ``<prefix>.json`` and the P-P figure
-            (``.png`` and ``.pdf``). Default ``self.output_dir``;
-            nothing is saved if both are None.
-        prefix : str
-            File name prefix.
-        show : bool
-            If True, display the figure.
-
-        Returns
-        -------
-        dict
-            ``sigma_core_best``, ``sigma_tail_best``, ``f_best``,
-            ``log_likelihood``, ``optimizer`` (success, message, nit, nfev),
-            ``bootstrap`` (std and 16/84 percentiles, or None),
-            ``ks_statistic`` / ``ks_pvalue`` against the uniform
-            distribution, ``coverage`` (empirical coverage at
-            ``COVERAGE_LEVELS``), the same for the original maps
-            (``ks_original``, ``coverage_original``),
-            ``confidence_levels`` of the validation GRBs, ``n_fit``,
-            ``n_validation``, ``validation_on_fit_sample`` and ``files``.
-        """
-        bounds = [tuple(map(float, b)) for b in (sigma_core_bounds, sigma_tail_bounds, f_bounds)]
-        (c_lo, c_hi), (t_lo, t_hi), (f_lo, f_hi) = bounds
-        if not 0.0 < c_lo < c_hi:
-            raise ValueError(f"sigma_core_bounds must satisfy 0 < low < high, got {sigma_core_bounds}")
-        if not t_lo < t_hi or t_hi <= c_lo + min_separation_deg:
-            raise ValueError(f"sigma_tail_bounds {sigma_tail_bounds} leave no room for sigma_tail > sigma_core")
-        if not 0.0 <= f_lo < f_hi <= 1.0:
-            raise ValueError(f"f_bounds must satisfy 0 <= low < high <= 1, got {f_bounds}")
-
-        rng = np.random.default_rng(seed)
-        de_kwargs = {"seed": seed, "tol": 1e-8, "popsize": 20, "maxiter": 2000, "polish": True,
-                     **(de_kwargs or {})}
-
-        # ---- samples ----
+    def _split_calibration_sample(self, results, validation_results, validation_fraction, rng):
+        """Training sample for the fit and the evidence, held-out sample for the P-P plot."""
         prepared = self.prepare_skymaps(results)
         if validation_results is not None:
             fit_sample, val_sample = prepared, self.prepare_skymaps(validation_results)
@@ -1091,80 +1105,307 @@ class ACSLocalizerBCT:
             fit_sample = [prepared[i] for i in order[n_val:]]
         else:
             fit_sample = val_sample = prepared
-        validation_on_fit_sample = val_sample is fit_sample
         if len(fit_sample) < 3 or len(val_sample) < 3:
             raise ValueError(f"Too few GRBs: {len(fit_sample)} to fit, {len(val_sample)} to validate")
-        if validation_on_fit_sample:
-            print("WARNING: P-P validation on the fit sample, it is not an independent check")
+        return fit_sample, val_sample
 
-        # ---- fit ----
-        C, ell = self._projection_matrix(fit_sample)
-        res = self._fit_core_tail(C, ell, bounds, density_floor, de_kwargs, min_separation_deg)
-        sigma_core, sigma_tail, f = (float(v) for v in res.x)
-        log_like = float(-res.fun)
-        optimizer = {
-            "success": bool(res.success),
-            "message": str(res.message),
-            "nit": int(res.nit),
-            "nfev": int(res.nfev),
+    def _log_predictive(self, thetas, logwt, C, ell, density_floor):
+        """ln p(validation | training): one systematic kernel shared by every GRB."""
+        logl = np.empty(len(thetas))
+        for start in range(0, len(thetas), 1024):
+            chunk = thetas[start:start + 1024]
+            logl[start:start + len(chunk)] = self._core_tail_log_likelihood_many(chunk, C, ell, density_floor)
+        return float(logsumexp(logwt + logl) - logsumexp(logwt))
+
+    def _nested_evidence(
+        self, label, loglike, prior_transform, ndim,
+        C_val, ell_val, density_floor, nlive, dlogz, seed, n_repeat, print_nested,
+    ):
+        """dynesty evidence. The quoted value is the first run; extra runs only check that ln Z repeats."""
+        try:
+            import dynesty
+        except ImportError as exc:
+            raise ImportError("Bayesian evidence needs dynesty (`pip install dynesty`).") from exc
+        if dlogz is None:
+            dlogz = 1e-3 * (nlive - 1.0) + 0.01
+        runs = []
+        predictive = None
+        for repeat in range(int(n_repeat)):
+            run_seed = None if seed is None else int(seed) + 10007 * (repeat + 1) + ndim
+            print(f"Nested sampling {label}: nlive={nlive}, dlogz={dlogz:.4g}, run {repeat + 1}/{int(n_repeat)}")
+            sampler = dynesty.NestedSampler(
+                loglike, prior_transform, ndim, nlive=int(nlive), rstate=np.random.default_rng(run_seed),
+            )
+            sampler.run_nested(dlogz=float(dlogz), print_progress=bool(print_nested))
+            res = sampler.results
+            runs.append({
+                "lnZ": float(res.logz[-1]),
+                "lnZ_err": float(res.logzerr[-1]),
+                "niter": int(res.niter),
+                "ncall": int(np.sum(res.ncall)),
+                "logl_max": float(np.max(res.logl)),
+            })
+            print(f"    ln Z = {runs[-1]['lnZ']:.2f} ± {runs[-1]['lnZ_err']:.3f}")
+            if repeat == 0:
+                samples = np.asarray(res.samples, dtype=float)
+                if ndim == 1:
+                    sigma = samples.reshape(-1)
+                    samples = np.column_stack((sigma, sigma, np.zeros(len(sigma))))
+                predictive = self._log_predictive(samples, res.logwt, C_val, ell_val, density_floor)
+        out = dict(runs[0])
+        out["log10_Z"] = out["lnZ"] / np.log(10.0)
+        out["ln_predictive"] = predictive
+        out["lnZ_repeat_std"] = None if len(runs) == 1 else float(np.std([run["lnZ"] for run in runs], ddof=1))
+        return out
+
+    def _validation_confidence(self, sample, sigma, sigma_core, sigma_tail, frac):
+        """True-position confidence level of the original, Gaussian and core+tail maps."""
+        levels = []
+        for item in sample:
+            prob_g = self.smooth_prepared_map(item, sigma, 0.0, 0.0)
+            prob_ct = self.smooth_prepared_map(item, sigma_core, sigma_tail, frac)
+            if prob_g is None or prob_ct is None:
+                continue
+            ipix = item["ipix_true"]
+            levels.append((
+                self._true_pixel_cl(item["prob"], ipix),
+                self._true_pixel_cl(prob_g, ipix),
+                self._true_pixel_cl(prob_ct, ipix),
+            ))
+        if len(levels) < 3:
+            raise ValueError(f"Too few validation maps could be smoothed ({len(levels)})")
+        return np.asarray(levels).T
+
+    def _coverage_at_levels(self, confidence):
+        return {f"{level:.2f}": float(np.mean(confidence <= level)) for level in self.COVERAGE_LEVELS}
+
+    def calibrate_core_tail_likelihood(
+        self,
+        results,
+        validation_results=None,
+        validation_fraction=0.3,
+        sigma_bounds=(0.5, 60.0),
+        sigma_core_bounds=(0.5, 20.0),
+        sigma_tail_bounds=(1.0, 60.0),
+        f_bounds=(0.0, 1.0),
+        min_separation_deg=1e-3,
+        n_bootstrap=100,
+        density_floor=1e-12,
+        seed=0,
+        de_kwargs=None,
+        compute_evidence=True,
+        nlive=500,
+        dlogz=None,
+        n_repeat=1,
+        print_nested=False,
+        output_dir=None,
+        prefix="core_tail_likelihood",
+        show=True,
+    ):
+        """
+        Compare a single Gaussian and a core+tail systematic on the same GRBs.
+
+        Both use ``core_tail_log_likelihood`` on the HEALPix map at the true
+        position. The Gaussian is that likelihood with ``f = 0``. The evidence
+        comes from nested sampling (dynesty) and
+
+            log10 B_21 = (ln Z_core+tail - ln Z_gaussian) / ln(10).
+
+        Priors are uniform on the bounds below. The tail prior is conditional
+        on ``sigma_core`` (see ``prior_transform_core_tail``), not uniform on
+        the region ``sigma_tail > sigma_core``.
+
+        The fit and the evidence use only the training sample. The held-out
+        fraction is used afterwards for the P-P plot, the KS test and the
+        predictive likelihood. ``log10 B_21 > 0`` favors core+tail given these
+        priors. It is not a factor of localization precision, and ``2 Δln L``
+        is not a chi-square test (at ``f = 0`` the tail width is unidentified).
+
+        ``result["pp_plot"]`` redraws the figure with ``plot_pp_from_data``
+        and is the object to pickle. The same dict is written to
+        ``<prefix>_pp.pkl`` when an output directory is set.
+
+        Parameters
+        ----------
+        results : list of dict
+            Same format as ``prepare_skymaps``.
+        validation_results : list of dict, optional
+            Independent validation sample. If given, ``validation_fraction`` is ignored.
+        validation_fraction : float
+            Fraction held out when ``validation_results`` is None. ``0`` validates on the fit sample.
+        sigma_bounds, sigma_core_bounds, sigma_tail_bounds, f_bounds : (float, float)
+            Uniform prior and search range. Sigmas in degrees.
+            Need ``sigma_tail_bounds[1] > sigma_core_bounds[1] + min_separation_deg``.
+        min_separation_deg : float
+            Minimum ``sigma_tail - sigma_core``, and the ``eps`` of the tail prior.
+        n_bootstrap : int
+            Bootstrap resamples for the core+tail uncertainties. ``0`` skips them.
+        density_floor : float
+            Smallest density, in sr^-1, entering the logarithm.
+        nlive, dlogz, n_repeat : int, float, int
+            Nested-sampling settings. ``dlogz=None`` uses dynesty's default.
+            ``n_repeat > 1`` repeats the run and reports the scatter of ln Z.
+        output_dir : str, optional
+            Directory for the json, the table, the pickle and the figure. Default ``self.output_dir``.
+        """
+        sigma_bounds, core_bounds, tail_bounds, frac_bounds = _check_systematic_bounds(
+            sigma_bounds, sigma_core_bounds, sigma_tail_bounds, f_bounds,
+            min_separation_deg, nlive, n_repeat,
+        )
+        bounds = [core_bounds, tail_bounds, frac_bounds]
+        rng = np.random.default_rng(seed)
+        de_kwargs = {
+            "seed": seed, "tol": 1e-8, "popsize": 20, "maxiter": 2000, "polish": True,
+            **(de_kwargs or {}),
         }
 
-        # ---- bootstrap ----
+        fit_sample, val_sample = self._split_calibration_sample(
+            results, validation_results, validation_fraction, rng,
+        )
+        on_training = val_sample is fit_sample
+        if on_training:
+            print("WARNING: validation uses the training sample, so the KS test is not independent")
+
+        # Maximum likelihood on the training projections. Both models see the same GRBs.
+        C, ell = self._projection_matrix(fit_sample)
+        core_fit = self._fit_core_tail(C, ell, bounds, density_floor, de_kwargs, min_separation_deg)
+        sigma_core, sigma_tail, frac = (float(v) for v in core_fit.x)
+        log_like = float(-core_fit.fun)
+        gauss_fit = self._fit_gaussian(C, ell, sigma_bounds, density_floor, de_kwargs)
+        sigma = float(gauss_fit.x[0])
+        log_like_g = float(-gauss_fit.fun)
         bootstrap = None
         if n_bootstrap > 0:
-            samples = np.empty((n_bootstrap, 3))
-            for b in range(n_bootstrap):
-                idx = rng.integers(0, len(C), len(C))
-                kw = {**de_kwargs, "seed": int(rng.integers(2**32))}
-                samples[b] = self._fit_core_tail(C[idx], ell, bounds, density_floor, kw, min_separation_deg).x
-            p16, p84 = np.percentile(samples, [16, 84], axis=0)
-            names = ("sigma_core", "sigma_tail", "f")
-            bootstrap = {
-                "n": n_bootstrap,
-                "std": dict(zip(names, samples.std(axis=0, ddof=1).tolist())),
-                "p16": dict(zip(names, p16.tolist())),
-                "p84": dict(zip(names, p84.tolist())),
-                "samples": samples,
-            }
+            bootstrap = self._bootstrap_core_tail(
+                C, ell, bounds, density_floor, de_kwargs, min_separation_deg, n_bootstrap, rng,
+            )
 
-        # ---- P-P validation ----
-        cl_cal, cl_orig = [], []
-        for item in val_sample:
-            prob = self.smooth_prepared_map(item, sigma_core, sigma_tail, f)
-            if prob is None:
-                continue
-            cl_cal.append(self._true_pixel_cl(prob, item["ipix_true"]))
-            cl_orig.append(self._true_pixel_cl(item["prob"], item["ipix_true"]))
-        cl_cal, cl_orig = np.asarray(cl_cal), np.asarray(cl_orig)
+        C_val, ell_val = self._projection_matrix(val_sample)
+        lnL_val_g = self.gaussian_log_likelihood(sigma, C_val, ell_val, density_floor)
+        lnL_val_ct = self.core_tail_log_likelihood((sigma_core, sigma_tail, frac), C_val, ell_val, density_floor)
 
-        ks = kstest(cl_cal, "uniform")
-        ks_orig = kstest(cl_orig, "uniform")
-        coverage = {f"{c:.2f}": float(np.mean(cl_cal <= c)) for c in self.COVERAGE_LEVELS}
-        coverage_orig = {f"{c:.2f}": float(np.mean(cl_orig <= c)) for c in self.COVERAGE_LEVELS}
+        evidence_g = evidence_ct = None
+        if compute_evidence:
+            evidence_g = self._nested_evidence(
+                "single Gaussian",
+                lambda theta: self.gaussian_log_likelihood(theta[0], C, ell, density_floor),
+                lambda u: self.prior_transform_gaussian(u, sigma_bounds),
+                1, C_val, ell_val, density_floor, nlive, dlogz, seed, n_repeat, print_nested,
+            )
+            evidence_ct = self._nested_evidence(
+                "core+tail",
+                lambda theta: self.core_tail_log_likelihood(theta, C, ell, density_floor),
+                lambda u: self.prior_transform_core_tail(u, core_bounds, tail_bounds, frac_bounds, min_separation_deg),
+                3, C_val, ell_val, density_floor, nlive, dlogz, seed, n_repeat, print_nested,
+            )
+
+        cl_orig, cl_g, cl_cal = self._validation_confidence(val_sample, sigma, sigma_core, sigma_tail, frac)
+        ks, ks_g, ks_orig = kstest(cl_cal, "uniform"), kstest(cl_g, "uniform"), kstest(cl_orig, "uniform")
+        coverage = self._coverage_at_levels(cl_cal)
+        coverage_g = self._coverage_at_levels(cl_g)
+        coverage_orig = self._coverage_at_levels(cl_orig)
+
+        gaussian = _systematic_model(1, {"sigma_deg": sigma}, log_like_g, lnL_val_g, ks_g, evidence_g)
+        core = _systematic_model(
+            3,
+            {"sigma_core_deg": sigma_core, "sigma_tail_deg": sigma_tail, "f_tail": frac},
+            log_like, lnL_val_ct, ks, evidence_ct,
+        )
+        comparison = _model_comparison(
+            gaussian, core, len(fit_sample), len(cl_cal), bootstrap, coverage_g, coverage, coverage_orig,
+        )
+        warnings = _calibration_warnings(
+            sigma, sigma_bounds, sigma_core, core_bounds, sigma_tail, tail_bounds, frac, frac_bounds,
+            min_separation_deg, C, ell, density_floor, self, evidence_g, evidence_ct,
+        )
+        if warnings:
+            comparison["table_text"] += "\n" + "\n".join(warnings)
+        print(comparison["table_text"])
 
         out = {
+            "sigma_best": sigma,
             "sigma_core_best": sigma_core,
             "sigma_tail_best": sigma_tail,
-            "f_best": f,
+            "f_best": frac,
             "log_likelihood": log_like,
-            "optimizer": optimizer,
+            "log_likelihood_gaussian": log_like_g,
+            "optimizer": _optimizer_record(core_fit),
+            "optimizer_gaussian": _optimizer_record(gauss_fit),
             "bootstrap": bootstrap,
             "ks_statistic": float(ks.statistic),
             "ks_pvalue": float(ks.pvalue),
+            "ks_gaussian": {"statistic": float(ks_g.statistic), "pvalue": float(ks_g.pvalue)},
             "coverage": coverage,
+            "coverage_gaussian": coverage_g,
             "ks_original": {"statistic": float(ks_orig.statistic), "pvalue": float(ks_orig.pvalue)},
             "coverage_original": coverage_orig,
             "confidence_levels": cl_cal,
+            "confidence_levels_gaussian": cl_g,
+            "confidence_levels_original": cl_orig,
             "n_fit": len(fit_sample),
             "n_validation": len(cl_cal),
-            "validation_on_fit_sample": validation_on_fit_sample,
-            "bounds": {"sigma_core": bounds[0], "sigma_tail": bounds[1], "f": bounds[2]},
+            "validation_on_fit_sample": on_training,
+            "bounds": {"sigma": sigma_bounds, "sigma_core": core_bounds, "sigma_tail": tail_bounds, "f": frac_bounds},
+            "comparison": comparison,
+            "log10_bayes_factor_21": comparison["log10_bayes_factor_21"],
+            "log10_bayes_factor_21_err": comparison["log10_bayes_factor_21_err"],
+            "favored_model": comparison["favored_model"],
             "files": {},
         }
-        self._print_core_tail_summary(out)
+        out["pp_plot"] = self._make_pp_plot(cl_orig, cl_g, cl_cal, out)
+        self._save_calibration(out, output_dir, prefix, show)
+        return out
 
-        # ---- figure and files ----
-        fig = self._plot_core_tail_pp(cl_cal, cl_orig, out)
+    def _make_pp_plot(self, cl_orig, cl_gauss, cl_core, out):
+        """Pickleable copy of the validation P-P figure."""
+        grid = np.linspace(0.0, 1.0, 201)
+        bands = self.pp_binomial_bands(grid, len(cl_core))
+        curves = [
+            _pp_curve("original", "Original maps", cl_orig, {"color": "0.35", "ls": ":"}, grid,
+                      ks_statistic=out["ks_original"]["statistic"], ks_pvalue=out["ks_original"]["pvalue"]),
+            _pp_curve("single_gaussian", "Single Gaussian", cl_gauss, {"color": "C1"}, grid,
+                      sigma_deg=out["sigma_best"],
+                      ks_statistic=out["ks_gaussian"]["statistic"], ks_pvalue=out["ks_gaussian"]["pvalue"]),
+            _pp_curve("core_tail", "Core+tail", cl_core, {"color": "C0"}, grid,
+                      sigma_core_deg=out["sigma_core_best"], sigma_tail_deg=out["sigma_tail_best"],
+                      f_tail=out["f_best"], ks_statistic=out["ks_statistic"], ks_pvalue=out["ks_pvalue"]),
+        ]
+        return {
+            "grid": grid,
+            "n": int(len(cl_core)),
+            "n_fit": int(out["n_fit"]),
+            "validation_on_fit_sample": bool(out["validation_on_fit_sample"]),
+            "bands": [
+                {"nsigma": int(k), "low": np.asarray(lo, dtype=float), "high": np.asarray(hi, dtype=float)}
+                for k, (lo, hi) in bands.items()
+            ],
+            "curves": curves,
+            "annotation": _pp_annotation(out),
+        }
+
+    def plot_pp_from_data(self, pp_plot, show=True):
+        """Redraw the calibration P-P figure from the dict stored in ``pp_plot`` or in the pickle."""
+        grid = np.asarray(pp_plot["grid"], dtype=float)
+        bands = {
+            int(item["nsigma"]): (np.asarray(item["low"], dtype=float), np.asarray(item["high"], dtype=float))
+            for item in pp_plot["bands"]
+        }
+        self._pp_figure(grid, bands)
+        fig, ax = plt.gcf(), plt.gca()
+        for curve in pp_plot["curves"]:
+            ax.step(curve["step_x"], curve["step_y"], where="post", linewidth=2,
+                    label=curve["label"], **curve["style"])
+        ax.text(0.04, 0.96, "\n".join(pp_plot["annotation"]), transform=ax.transAxes,
+                va="top", fontsize=10, bbox={"boxstyle": "round", "fc": "white", "ec": "0.7"})
+        self._pp_finish(grid, show=False)
+        ax.legend(loc="lower right", fontsize=10)
+        fig.tight_layout()
+        if show:
+            plt.show()
+        return fig
+
+    def _save_calibration(self, out, output_dir, prefix, show):
+        fig = self.plot_pp_from_data(out["pp_plot"], show=False)
         output_dir = output_dir or getattr(self, "output_dir", None)
         if output_dir is not None:
             os.makedirs(output_dir, exist_ok=True)
@@ -1175,120 +1416,238 @@ class ACSLocalizerBCT:
             out["files"]["json"] = f"{base}.json"
             with open(out["files"]["json"], "w") as fp:
                 json.dump(_to_json(out), fp, indent=2)
+            out["files"]["pp_pickle"] = f"{base}_pp.pkl"
+            with open(out["files"]["pp_pickle"], "wb") as fp:
+                pickle.dump(out["pp_plot"], fp, protocol=pickle.HIGHEST_PROTOCOL)
+            out["files"]["comparison_txt"] = f"{base}_comparison.txt"
+            with open(out["files"]["comparison_txt"], "w") as fp:
+                fp.write(out["comparison"]["table_text"] + "\n")
         if show:
             plt.show()
         else:
             plt.close(fig)
-        return out
-
-    @staticmethod
-    def _print_core_tail_summary(out):
-        bs = out["bootstrap"]
-
-        def fmt(name, key, unit):
-            value = out[key]
-            if bs is None:
-                return f"    {name:<11}= {value:.3f}{unit}"
-            return (f"    {name:<11}= {value:.3f}{unit}  (bootstrap std {bs['std'][name]:.3f}, "
-                    f"16-84%: {bs['p16'][name]:.3f} - {bs['p84'][name]:.3f})")
-
-        opt = out["optimizer"]
-        print(f"Core+tail ML fit on {out['n_fit']} GRBs: log L = {out['log_likelihood']:.2f}, "
-              f"success = {opt['success']} ({opt['nit']} iterations, {opt['nfev']} evaluations)")
-        print(fmt("sigma_core", "sigma_core_best", " deg"))
-        print(fmt("sigma_tail", "sigma_tail_best", " deg"))
-        print(fmt("f", "f_best", ""))
-        source = "fit sample" if out["validation_on_fit_sample"] else "independent sample"
-        print(f"P-P validation on {out['n_validation']} GRBs ({source}): "
-              f"KS = {out['ks_statistic']:.3f}, p = {out['ks_pvalue']:.3g} "
-              f"(original maps: KS = {out['ks_original']['statistic']:.3f}, "
-              f"p = {out['ks_original']['pvalue']:.3g})")
-        n = out["n_validation"]
-        print(f"    {'level':>6}{'calibrated':>12}{'original':>10}{'binomial 1 sigma':>18}")
-        for level, cov in out["coverage"].items():
-            c = float(level)
-            print(f"    {level:>6}{cov:>12.3f}{out['coverage_original'][level]:>10.3f}"
-                  f"{np.sqrt(c * (1 - c) / n):>18.3f}")
-
-    
-    def _plot_core_tail_pp(self, cl_cal, cl_orig, out):
-        """P-P plot with the same style as the other calibrations."""
-
-        n = len(cl_cal)
-        grid = np.linspace(0.0, 1.0, 201)
-        bands = self.pp_binomial_bands(grid, n)
-
-        # Same figure size, colors and binomial bands
-        self._pp_figure(grid, bands)
-        fig = plt.gcf()
-        ax = plt.gca()
-
-        # Original and calibrated P-P curves
-        for cl, style, label in (
-            (cl_orig, {"color": "0.3", "ls": ":"}, "Original maps"),
-            (cl_cal, {}, "Core+tail calibrated"),
-        ):
-            x = np.concatenate(([0.0], np.sort(cl), [1.0]))
-            y = np.concatenate((
-                [0.0],
-                np.arange(1, len(cl) + 1) / len(cl),
-                [1.0]
-            ))
-
-            ax.step(
-                x, y,
-                where="post",
-                linewidth=2,
-                label=label,
-                **style
-            )
-
-        # Calibration parameters and statistics
-        bs = out["bootstrap"]
-
-        err = (
-            lambda k: rf" \pm {bs['std'][k]:.2f}"
-        ) if bs else (lambda k: "")
-
-        info = "\n".join([
-            rf"$\sigma_{{\rm core}} = {out['sigma_core_best']:.2f}{err('sigma_core')}^\circ$",
-            rf"$\sigma_{{\rm tail}} = {out['sigma_tail_best']:.2f}{err('sigma_tail')}^\circ$",
-            rf"$f = {out['f_best']:.3f}{err('f')}$",
-            rf"KS $= {out['ks_statistic']:.3f}$ ($p = {out['ks_pvalue']:.2g}$)",
-            rf"$N = {n}$",
-        ])
-
-        ax.text(
-            0.04, 0.96,
-            info,
-            transform=ax.transAxes,
-            va="top",
-            fontsize=10,
-            bbox={
-                "boxstyle": "round",
-                "fc": "white",
-                "ec": "0.7"
-            }
-        )
-
-        # Same axes, labels, fonts, grid and legend style
-        self._pp_finish(grid, show=False)
-
-        ax.legend(
-            loc="lower right",
-            fontsize=10
-        )
-
-        fig.tight_layout()
-
-        return fig
-
 
     @staticmethod
     def _load_pickle(path):
         """Load a pickle file."""
         with open(path, "rb") as f:
             return pickle.load(f)
+
+
+def _check_systematic_bounds(sigma_bounds, core_bounds, tail_bounds, frac_bounds, eps, nlive, n_repeat):
+    sigma_bounds, core_bounds, tail_bounds, frac_bounds = (
+        tuple(map(float, bounds)) for bounds in (sigma_bounds, core_bounds, tail_bounds, frac_bounds)
+    )
+    s_lo, s_hi = sigma_bounds
+    c_lo, c_hi = core_bounds
+    t_lo, t_hi = tail_bounds
+    f_lo, f_hi = frac_bounds
+    if not 0.0 < s_lo < s_hi:
+        raise ValueError(f"sigma_bounds must satisfy 0 < low < high, got {sigma_bounds}")
+    if not 0.0 < c_lo < c_hi:
+        raise ValueError(f"sigma_core_bounds must satisfy 0 < low < high, got {core_bounds}")
+    if not t_lo < t_hi or t_hi <= c_lo + eps:
+        raise ValueError(f"sigma_tail_bounds {tail_bounds} leave no room for sigma_tail > sigma_core")
+    if t_hi <= c_hi + eps:
+        raise ValueError(
+            "sigma_tail_bounds[1] must exceed sigma_core_bounds[1] + min_separation_deg, "
+            f"got tail {tail_bounds} and core {core_bounds}"
+        )
+    if not 0.0 <= f_lo < f_hi <= 1.0:
+        raise ValueError(f"f_bounds must satisfy 0 <= low < high <= 1, got {frac_bounds}")
+    if int(nlive) < 2 or int(n_repeat) < 1:
+        raise ValueError(f"nlive must be >= 2 and n_repeat >= 1, got nlive={nlive}, n_repeat={n_repeat}")
+    return sigma_bounds, core_bounds, tail_bounds, frac_bounds
+
+
+def _optimizer_record(result):
+    return {
+        "success": bool(result.success),
+        "message": str(result.message),
+        "nit": int(result.nit),
+        "nfev": int(result.nfev),
+    }
+
+
+def _systematic_model(n_parameters, parameters, lnL_train, lnL_val, ks, evidence):
+    """One column of the comparison table. Missing evidence values stay None."""
+    evidence = evidence or {}
+    model = {
+        "n_parameters": n_parameters,
+        "sigma_deg": None,
+        "sigma_core_deg": None,
+        "sigma_tail_deg": None,
+        "f_tail": None,
+        "lnL_max_training": lnL_train,
+        "lnL_validation": lnL_val,
+        "lnZ": evidence.get("lnZ"),
+        "lnZ_err": evidence.get("lnZ_err"),
+        "log10_Z": evidence.get("log10_Z"),
+        "ln_predictive": evidence.get("ln_predictive"),
+        "ks_statistic": float(ks.statistic),
+        "ks_pvalue": float(ks.pvalue),
+    }
+    model.update(parameters)
+    return model
+
+
+def _near_edge(value, low, high):
+    pad = 0.01 * (high - low)
+    return value <= low + pad or value >= high - pad
+
+
+def _calibration_warnings(
+    sigma, sigma_bounds, sigma_core, core_bounds, sigma_tail, tail_bounds, frac, frac_bounds,
+    eps, C, ell, density_floor, localizer, evidence_g, evidence_ct,
+):
+    """Short checks that change how the Bayes factor should be read."""
+    messages = []
+    n_floor_g = int(np.sum(localizer._mixture_density((sigma, sigma, 0.0), C, ell) <= density_floor * (1 + 1e-8)))
+    n_floor_ct = int(np.sum(
+        localizer._mixture_density((sigma_core, sigma_tail, frac), C, ell) <= density_floor * (1 + 1e-8)
+    ))
+    if n_floor_g or n_floor_ct:
+        messages.append(
+            f"WARNING: density_floor cuts {n_floor_g} Gaussian and {n_floor_ct} core+tail training GRBs"
+        )
+    tail_low = max(tail_bounds[0], sigma_core + eps)
+    close = [
+        name for name, value, low, high in (
+            ("sigma", sigma, *sigma_bounds),
+            ("sigma_core", sigma_core, *core_bounds),
+            ("sigma_tail", sigma_tail, tail_low, tail_bounds[1]),
+            ("f", frac, *frac_bounds),
+        ) if _near_edge(value, low, high)
+    ]
+    if close:
+        messages.append("WARNING: maximum likelihood near a prior edge: " + ", ".join(close))
+    if evidence_g is not None and max(evidence_g["lnZ_err"], evidence_ct["lnZ_err"]) > 0.5:
+        messages.append("WARNING: evidence uncertainty is large; increase nlive or lower dlogz")
+    if evidence_g is not None and evidence_g["lnZ_repeat_std"] is not None:
+        messages.append(
+            "Run-to-run std of ln Z: "
+            f"Gaussian {evidence_g['lnZ_repeat_std']:.3f}, core+tail {evidence_ct['lnZ_repeat_std']:.3f}"
+        )
+    return messages
+
+
+_TABLE_ROWS = (
+    ("n_parameters", "Number of parameters", "{:.0f}"),
+    ("sigma_deg", "sigma [deg]", "{:.3f}"),
+    ("sigma_core_deg", "sigma_core [deg]", "{:.3f}"),
+    ("sigma_tail_deg", "sigma_tail [deg]", "{:.3f}"),
+    ("f_tail", "f_tail", "{:.4f}"),
+    ("lnL_max_training", "ln L_max training", "{:.2f}"),
+    ("lnZ", "ln Z", "{:.2f}"),
+    ("lnZ_err", "ln Z uncertainty", "{:.3f}"),
+    ("log10_Z", "log10 Z", "{:.3f}"),
+    ("ks_statistic", "KS validation", "{:.3f}"),
+    ("ks_pvalue", "KS p-value", "{:.3g}"),
+    ("lnL_validation", "ln L validation", "{:.2f}"),
+    ("ln_predictive", "ln predictive validation", "{:.2f}"),
+)
+
+
+def _model_comparison(gaussian, core, n_fit, n_validation, bootstrap, coverage_g, coverage, coverage_orig):
+    """The scientific table, plus log10 B21 when both evidences exist."""
+    rows = [
+        {"quantity": key, "label": label, "single_gaussian": gaussian[key], "core_tail": core[key]}
+        for key, label, _fmt in _TABLE_ROWS
+    ]
+    log10_b = log10_b_err = favored = within = None
+    if gaussian["lnZ"] is not None and core["lnZ"] is not None:
+        log10_b = (core["lnZ"] - gaussian["lnZ"]) / np.log(10.0)
+        log10_b_err = np.hypot(gaussian["lnZ_err"], core["lnZ_err"]) / np.log(10.0)
+        if np.isfinite(log10_b):
+            favored = "core+tail" if log10_b > 0 else "single gaussian" if log10_b < 0 else "no preference"
+            within = bool(abs(log10_b) <= log10_b_err)
+
+    def cell(value, fmt):
+        return "—" if value is None else fmt.format(value)
+
+    formats = {key: fmt for key, _label, fmt in _TABLE_ROWS}
+    body = [
+        (row["label"], cell(row["single_gaussian"], formats[row["quantity"]]), cell(row["core_tail"], formats[row["quantity"]]))
+        for row in rows
+    ]
+    headers = ("Quantity", "Single Gaussian", "Core+tail")
+    widths = [max(len(headers[i]), *(len(line[i]) for line in body)) for i in range(3)]
+
+    def line(cols):
+        return "  ".join(col.ljust(width) for col, width in zip(cols, widths)).rstrip()
+
+    text = [
+        f"Model comparison on {n_fit} training GRBs, {n_validation} validation GRBs",
+        line(headers),
+        line(tuple("-" * width for width in widths)),
+        *(line(row) for row in body),
+        "",
+        f"Delta ln L_max (core+tail - single Gaussian, training) = {core['lnL_max_training'] - gaussian['lnL_max_training']:.2f}",
+    ]
+    if log10_b is None or not np.isfinite(log10_b):
+        text.append("log10 B21 was not computed.")
+    else:
+        text.append(f"log10 B21 (core+tail / single Gaussian) = {log10_b:.3f} ± {log10_b_err:.3f}")
+        text.append(f"Favored model: {favored}")
+        if within:
+            text.append("The two models are not separated by the numerical uncertainty on log10 B21.")
+        else:
+            text.append("The preference is larger than the numerical uncertainty on log10 B21.")
+        text.append("Equal model priors: the posterior odds equal the Bayes factor.")
+        text.append("log10 B21 is relative support for these priors, not a gain in localization precision.")
+    text.append("2*Delta ln L is not a chi-square statistic: at f=0 the tail width is unidentified.")
+    if bootstrap is not None:
+        std = bootstrap["std"]
+        text.append(
+            f"bootstrap std: sigma_core={std['sigma_core']:.3f} deg, "
+            f"sigma_tail={std['sigma_tail']:.3f} deg, f={std['f']:.3f}"
+        )
+    for label, cov in (("gaussian", coverage_g), ("core+tail", coverage), ("original", coverage_orig)):
+        text.append("coverage " + label + ": " + "  ".join(f"{level}={value:.3f}" for level, value in cov.items()))
+    return {
+        "single_gaussian": gaussian,
+        "core_tail": core,
+        "rows": rows,
+        "table_text": "\n".join(text),
+        "log10_bayes_factor_21": None if log10_b is None else float(log10_b),
+        "log10_bayes_factor_21_err": None if log10_b_err is None else float(log10_b_err),
+        "favored_model": favored,
+        "n_fit": int(n_fit),
+        "n_validation": int(n_validation),
+    }
+
+
+def _pp_curve(name, label, confidence, style, grid, **extra):
+    ordered = np.sort(np.asarray(confidence, dtype=float))
+    n = len(ordered)
+    curve = {
+        "name": name,
+        "label": label,
+        "confidence_levels": np.asarray(confidence, dtype=float),
+        "step_x": np.concatenate(([0.0], ordered, [1.0])),
+        "step_y": np.concatenate(([0.0], np.arange(1, n + 1) / n, [1.0])),
+        "fraction": np.searchsorted(ordered, grid, side="right") / n,
+        "style": style,
+    }
+    curve.update(extra)
+    return curve
+
+
+def _pp_annotation(out):
+    bootstrap = out["bootstrap"]
+    err = (lambda key: rf" \pm {bootstrap['std'][key]:.2f}") if bootstrap else (lambda key: "")
+    lines = [
+        rf"$\sigma = {out['sigma_best']:.2f}^\circ$",
+        rf"$\sigma_{{\rm core}} = {out['sigma_core_best']:.2f}{err('sigma_core')}^\circ$",
+        rf"$\sigma_{{\rm tail}} = {out['sigma_tail_best']:.2f}{err('sigma_tail')}^\circ$",
+        rf"$f = {out['f_best']:.3f}{err('f')}$",
+        rf"KS$_G = {out['ks_gaussian']['statistic']:.3f}$, KS$_{{CT}} = {out['ks_statistic']:.3f}$",
+        rf"$N = {out['n_validation']}$",
+    ]
+    bayes = out["comparison"]["log10_bayes_factor_21"]
+    if bayes is not None:
+        lines.append(rf"$\log_{{10}} B_{{21}} = {bayes:.2f} \pm {out['comparison']['log10_bayes_factor_21_err']:.2f}$")
+    return lines
 
 
 def _to_json(obj):
