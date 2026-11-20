@@ -222,7 +222,7 @@ class ACSDataAnalyzer:
         if debug:
             self._debug_selection(
                 lc_sum, b, selected, snr, significance, bin_method, snr_threshold,
-                t90_window,
+                t90_window, signal_window,
             )
 
         # 5. The same bins on every panel.
@@ -309,11 +309,8 @@ class ACSDataAnalyzer:
         print(f"    T90 = {t90:.3f} s  (-{t90_err[0]:.3f} / +{t90_err[1]:.3f})")
 
         fig, ax, t0 = _t90_axes(t90_window)
-        ax.axvline(signal_window[0] - t0, ls="--", color="black", lw=1.5, label="Time start/stop")
-        ax.axvline(signal_window[1] - t0, ls="--", color="black", lw=1.5)
-        pad = 1.0
-        ax.set_xlim(min(-5.0, signal_window[0] - t0 - pad),
-                    max(5.0, signal_window[1] - t0 + pad))
+        _signal_window_lines(ax, signal_window, t0)
+        _change_points(ax, bb.bb_lightcurve, t0)
         _plot_rates(ax, lc_sum, t0, **_LC_STYLE, label="Summed counts")
         _plot_rates(ax, bb.bb_lightcurve, t0, color="red", lw=2, label="Bayesian blocks")
         ax.set_title("Step 2: Bayesian Blocks, T90 and signal window")
@@ -337,7 +334,7 @@ class ACSDataAnalyzer:
         _show(fig)
 
     def _debug_selection(self, lc_sum, b, selected, snr, significance, bin_method,
-                         snr_threshold, t90_window):
+                         snr_threshold, t90_window, signal_window):
         rule = f"{bin_method} (SNR > {snr_threshold})" if bin_method == "snr_threshold" else bin_method
         d_sel = lc_sum.counts[selected].sum()
         b_sel = b[selected].sum()
@@ -353,6 +350,7 @@ class ACSDataAnalyzer:
                   f"{b[i]:>12.1f}{bin_snr[i]:>10.2f}")
 
         fig, ax, t0 = _t90_axes(t90_window)
+        _signal_window_lines(ax, signal_window, t0)
         _shade_bins(ax, lc_sum, selected, t0)
         _plot_rates(ax, lc_sum, t0, **_LC_STYLE, label="Summed counts")
         ax.plot(lc_sum.centroids - t0, b / lc_sum.exposure, **_BKG_STYLE, label="Summed background")
@@ -409,14 +407,31 @@ def _plot_rates(ax, lc, t0, **kwargs):
 
 
 def _t90_axes(t90_window):
-    """Figure centered on the T90 (+/- 5 s), with the T90 as a very light purple band."""
+    """Figure centered on the T90 (+/- 5 s)."""
     t0 = 0.5 * (t90_window[0] + t90_window[1])
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.axvspan(t90_window[0] - t0, t90_window[1] - t0, color="#f3e6fb", zorder=0, label="T90")
     ax.set_xlim(-5, 5)
     ax.set_xlabel("Time - T90 center [s]")
     ax.set_ylabel("Counts / s")
     return fig, ax, t0
+
+
+def _signal_window_lines(ax, signal_window, t0):
+    """Black dashed lines at the signal-window start and stop, kept inside the axes."""
+    ax.axvline(signal_window[0] - t0, ls="--", color="black", lw=1.5, label="tstart/tstop")
+    ax.axvline(signal_window[1] - t0, ls="--", color="black", lw=1.5)
+    pad = 1.0
+    ax.set_xlim(min(-5.0, signal_window[0] - t0 - pad),
+                max(5.0, signal_window[1] - t0 + pad))
+
+
+def _change_points(ax, lc_bayes, t0):
+    """One purple line, half transparent, at every Bayesian-block edge."""
+    edges = np.append(lc_bayes.lo_edges, lc_bayes.hi_edges[-1])
+    label = "Change point"
+    for t in edges:
+        ax.axvline(t - t0, color="purple", alpha=0.5, lw=1, label=label)
+        label = None
 
 
 def _shade_bins(ax, lc, indices, t0):
