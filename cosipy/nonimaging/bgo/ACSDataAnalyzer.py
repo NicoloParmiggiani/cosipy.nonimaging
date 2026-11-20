@@ -183,9 +183,9 @@ class ACSDataAnalyzer:
         try:
             bb = BayesianBlocksLightcurve(lc_sum)
             bb.compute_bayesian_blocks(p0=p0)
-            t90 = bb.duration(quantile=0.9)
+            t90, t90_start, t90_stop = bb.duration(quantile=0.9)
             t90_err = bb.duration_error(0.9, nsamples=100)
-            t90_window = tuple(float(t) for t in bb.quantile_range(quantile=0.9))
+            t90_window = (float(t90_start), float(t90_stop))
             signal_window = (float(bb.signal_range.tstart), float(bb.signal_range.tstop))
         except Exception as exc:
             print(f"WARNING: Bayesian blocks failed on the summed light curve: {exc}")
