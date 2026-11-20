@@ -309,6 +309,11 @@ class ACSDataAnalyzer:
         print(f"    T90 = {t90:.3f} s  (-{t90_err[0]:.3f} / +{t90_err[1]:.3f})")
 
         fig, ax, t0 = _t90_axes(t90_window)
+        ax.axvline(signal_window[0] - t0, ls="--", color="black", lw=1.5, label="Time start/stop")
+        ax.axvline(signal_window[1] - t0, ls="--", color="black", lw=1.5)
+        pad = 1.0
+        ax.set_xlim(min(-5.0, signal_window[0] - t0 - pad),
+                    max(5.0, signal_window[1] - t0 + pad))
         _plot_rates(ax, lc_sum, t0, **_LC_STYLE, label="Summed counts")
         _plot_rates(ax, bb.bb_lightcurve, t0, color="red", lw=2, label="Bayesian blocks")
         ax.set_title("Step 2: Bayesian Blocks, T90 and signal window")
@@ -340,6 +345,12 @@ class ACSDataAnalyzer:
         print(f"    {selected.size} bins, indices {selected.tolist()}")
         print(f"    d = {d_sel:.1f}, b = {b_sel:.1f}, SNR = {snr:.2f}")
         print(f"    Li & Ma significance in the T90: {significance:.2f}")
+        # sum_s is the observed counts (S+B), sum_b the background, both summed over panels.
+        bin_snr = counts_snr(lc_sum.counts, b)
+        print(f"    {'time':>12}{'sum_s':>12}{'sum_b':>12}{'SNR':>10}")
+        for i in selected:
+            print(f"    {lc_sum.centroids[i]:>12.3f}{lc_sum.counts[i]:>12.1f}"
+                  f"{b[i]:>12.1f}{bin_snr[i]:>10.2f}")
 
         fig, ax, t0 = _t90_axes(t90_window)
         _shade_bins(ax, lc_sum, selected, t0)
@@ -398,10 +409,10 @@ def _plot_rates(ax, lc, t0, **kwargs):
 
 
 def _t90_axes(t90_window):
-    """Figure centered on the T90 (+/- 5 s), with the T90 as a light green band."""
+    """Figure centered on the T90 (+/- 5 s), with the T90 as a very light purple band."""
     t0 = 0.5 * (t90_window[0] + t90_window[1])
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.axvspan(t90_window[0] - t0, t90_window[1] - t0, color="#b7e4c7", zorder=0, label="T90")
+    ax.axvspan(t90_window[0] - t0, t90_window[1] - t0, color="#f3e6fb", zorder=0, label="T90")
     ax.set_xlim(-5, 5)
     ax.set_xlabel("Time - T90 center [s]")
     ax.set_ylabel("Counts / s")
